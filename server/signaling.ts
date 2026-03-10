@@ -1,5 +1,5 @@
 /**
- * WebSocket Relay Server for LAN Transfer
+ * WebSocket Relay Server for Quick Transfer
  * 
  * Pure WebSocket relay approach — no WebRTC needed.
  * A host (PC) registers with a 4-digit token, a client (mobile) joins by token.

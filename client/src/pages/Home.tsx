@@ -1,5 +1,5 @@
 /**
- * Home Page — LAN Transfer
+ * Home Page — Quick Transfer
  * 
  * Design: Swiss Utility — Functional Minimalism
  * - Pure white background, near-black text, single teal accent
@@ -21,6 +21,8 @@ import {
   Loader2,
   AlertCircle,
   RefreshCw,
+  Shield,
+  ChevronDown,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -162,7 +164,7 @@ export default function Home() {
             <ArrowLeftRight className="size-3.5 text-primary" />
             <Smartphone className="size-5 text-foreground/70" />
           </div>
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">LAN Transfer</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Quick Transfer</h1>
           <p className="text-[11px] text-muted-foreground mt-1.5 font-mono tracking-wide">t.sum.pub</p>
         </motion.div>
 
@@ -237,7 +239,7 @@ export default function Home() {
 
               {/* Steps */}
               <div className="space-y-3 text-left">
-                <Step num={1} text={<>Open <span className="font-mono font-medium text-foreground">t.sum.pub</span> on your phone</>} />
+                <Step num={1} text={<>Open <span className="font-mono font-medium text-foreground">t.sum.pub</span> on another device</>} />
                 <Step num={2} text="Enter the 4-digit code above" />
                 <Step num={3} text="Start transferring files and text" />
               </div>
@@ -328,12 +330,22 @@ export default function Home() {
           )}
         </AnimatePresence>
 
+        {/* Privacy & tech notice */}
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.5 }}
+          className="mt-12"
+        >
+          <TechDetails />
+        </motion.div>
+
         {/* Mode switcher */}
         <motion.div
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.6 }}
-          className="mt-14 text-center"
+          className="mt-4 text-center"
         >
           <button
             onClick={handleSwitchMode}
@@ -352,6 +364,53 @@ function Step({ num, text }: { num: number; text: React.ReactNode }) {
     <div className="flex items-start gap-3">
       <span className="text-sm font-mono text-muted-foreground/60 mt-0.5 shrink-0 w-5 text-right">{num}</span>
       <span className="text-sm text-muted-foreground leading-relaxed">{text}</span>
+    </div>
+  );
+}
+
+function TechDetails() {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="text-center">
+      <button
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
+      >
+        <Shield className="size-3" />
+        <span>No files stored on server</span>
+        <ChevronDown className={cn("size-3 transition-transform duration-200", open && "rotate-180")} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.2 }}
+            className="overflow-hidden"
+          >
+            <div className="mt-4 mx-auto max-w-[280px] text-left space-y-2.5 text-[11px] text-muted-foreground/60 leading-relaxed">
+              <div className="flex gap-2">
+                <span className="font-mono text-primary/60 shrink-0 mt-px">WSS</span>
+                <span>Devices connect via <span className="font-mono text-muted-foreground/80">WebSocket (wss://)</span> with TLS encryption. Data is relayed in real-time through the server.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="font-mono text-primary/60 shrink-0 mt-px">MEM</span>
+                <span>Files stream through server memory only. Zero disk writes, zero database storage. Data exists in transit, never at rest.</span>
+              </div>
+              <div className="flex gap-2">
+                <span className="font-mono text-primary/60 shrink-0 mt-px">TTL</span>
+                <span>Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.</span>
+              </div>
+              <div className="mt-3 pt-2.5 border-t border-border/30 text-[10px] font-mono text-muted-foreground/40">
+                Protocol: WSS &middot; Chunk size: 64KB &middot; No logs &middot; No analytics on content
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
