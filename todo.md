@@ -24,3 +24,6 @@
 - [x] SEO修复：添加关键词meta标签
 - [x] SEO修复：添加H2标题
 - [x] SEO修复：调整document.title长度到30-60字符
+- [x] 创建 sitemap.xml
+- [x] 创建 robots.txt
+- [ ] 提交到 Google Search Console 索引
