@@ -45,6 +45,7 @@ export function setupSignalingServer(server: Server) {
   wss.on("connection", (ws: WebSocket) => {
     let currentToken: string | null = null;
     let currentRole: "host" | "client" | null = null;
+    console.log(`[Relay] New WebSocket connection, total rooms=${rooms.size}`);
 
     ws.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       try {
@@ -83,6 +84,7 @@ export function setupSignalingServer(server: Server) {
             rooms.set(token, { token, host: ws, client: null, createdAt: Date.now() });
             currentToken = token;
             currentRole = "host";
+            console.log(`[Relay] Host registered token=${token}, total rooms=${rooms.size}, all tokens=[${Array.from(rooms.keys()).join(',')}]`);
             ws.send(JSON.stringify({ type: "registered", token }));
             break;
           }
@@ -90,6 +92,7 @@ export function setupSignalingServer(server: Server) {
           case "join": {
             const token = msg.token;
             const room = rooms.get(token);
+            console.log(`[Relay] Client join request token=${token}, room exists=${!!room}, host open=${room?.host?.readyState === WebSocket.OPEN}, total rooms=${rooms.size}, all tokens=[${Array.from(rooms.keys()).join(',')}]`);
 
             if (!room || !room.host || room.host.readyState !== WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "error", message: "No host found with this token" }));
@@ -140,6 +143,7 @@ export function setupSignalingServer(server: Server) {
     });
 
     ws.on("close", () => {
+      console.log(`[Relay] WebSocket closed, role=${currentRole}, token=${currentToken}`);
       if (currentToken) {
         const room = rooms.get(currentToken);
         if (room) {

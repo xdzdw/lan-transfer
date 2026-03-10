@@ -16,3 +16,4 @@
 - [x] WebSocket 信令服务器实现跨设备连接
 - [x] 信令服务器单元测试（7个测试全部通过）
 - [x] 修复手机端无法连接PC端的问题（改为纯WebSocket中继方案，去掉WebRTC）
+- [ ] 修复手机端报"no host found with this token"的问题
