@@ -350,8 +350,8 @@ export default function Home() {
 function Step({ num, text }: { num: number; text: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="text-[10px] font-mono text-muted-foreground/60 mt-0.5 shrink-0 w-4 text-right">{num}</span>
-      <span className="text-xs text-muted-foreground leading-relaxed">{text}</span>
+      <span className="text-sm font-mono text-muted-foreground/60 mt-0.5 shrink-0 w-5 text-right">{num}</span>
+      <span className="text-sm text-muted-foreground leading-relaxed">{text}</span>
     </div>
   );
 }
