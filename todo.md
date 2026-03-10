@@ -20,3 +20,7 @@
 - [x] 去掉网站中“局域网”相关说明
 - [x] 添加“服务器不存储任何文件，只做网络传输”隐私声明
 - [x] 在隐私声明处暴露技术细节（WebSocket等），让技术用户放心
+- [x] 将管理面板/标签页标题中的“LAN Transfer”改为“Quick Transfer”（用户手动在Settings中修改）
+- [x] SEO修复：添加关键词meta标签
+- [x] SEO修复：添加H2标题
+- [x] SEO修复：调整document.title长度到30-60字符

@@ -37,6 +37,11 @@ export default function Home() {
   const host = usePeerHost();
   const client = usePeerClient();
 
+  // Set document title for SEO
+  useEffect(() => {
+    document.title = "Quick Transfer - Send Files Between Devices";
+  }, []);
+
   // Auto-detect mode on mount
   useEffect(() => {
     if (mode === null) {
@@ -165,7 +170,8 @@ export default function Home() {
             <Smartphone className="size-5 text-foreground/70" />
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Quick Transfer</h1>
-          <p className="text-[11px] text-muted-foreground mt-1.5 font-mono tracking-wide">t.sum.pub</p>
+          <h2 className="text-xs text-muted-foreground mt-1.5 font-medium">Send Files & Text Between Devices Instantly</h2>
+          <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">t.sum.pub</p>
         </motion.div>
 
         <AnimatePresence mode="wait">
