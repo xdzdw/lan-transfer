@@ -20,8 +20,12 @@ function createWsClient(): Promise<WebSocket> {
 
 function waitForMessage(ws: WebSocket): Promise<any> {
   return new Promise((resolve) => {
-    ws.once("message", (data) => {
-      resolve(JSON.parse(data.toString()));
+    ws.once("message", (data, isBinary) => {
+      if (isBinary) {
+        resolve({ _binary: true, data: Buffer.from(data as Buffer) });
+      } else {
+        resolve(JSON.parse(data.toString()));
+      }
     });
   });
 }
@@ -44,14 +48,12 @@ afterAll(async () => {
   });
 });
 
-describe("Signaling Server", () => {
+describe("WebSocket Relay Server", () => {
   let clients: WebSocket[] = [];
 
   afterEach(() => {
     for (const ws of clients) {
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.close();
-      }
+      if (ws.readyState === WebSocket.OPEN) ws.close();
     }
     clients = [];
   });
@@ -80,7 +82,7 @@ describe("Signaling Server", () => {
     expect(response.message).toBe("Invalid token");
   });
 
-  it("should allow client to join an existing room", async () => {
+  it("should connect host and client when client joins", async () => {
     const host = await createWsClient();
     const client = await createWsClient();
     clients.push(host, client);
@@ -90,7 +92,7 @@ describe("Signaling Server", () => {
     host.send(JSON.stringify({ type: "register", token: "5678" }));
     await registerPromise;
 
-    // Client joins
+    // Client joins — both should get "connected"
     const hostMsgPromise = waitForMessage(host);
     const clientMsgPromise = waitForMessage(client);
     client.send(JSON.stringify({ type: "join", token: "5678" }));
@@ -98,9 +100,8 @@ describe("Signaling Server", () => {
     const hostMsg = await hostMsgPromise;
     const clientMsg = await clientMsgPromise;
 
-    expect(hostMsg.type).toBe("client-joined");
-    expect(clientMsg.type).toBe("joined");
-    expect(clientMsg.token).toBe("5678");
+    expect(hostMsg.type).toBe("connected");
+    expect(clientMsg.type).toBe("connected");
   });
 
   it("should return error when joining non-existent room", async () => {
@@ -115,38 +116,63 @@ describe("Signaling Server", () => {
     expect(response.message).toBe("No host found with this token");
   });
 
-  it("should relay signaling messages between host and client", async () => {
+  it("should relay text messages between host and client", async () => {
     const host = await createWsClient();
     const client = await createWsClient();
     clients.push(host, client);
 
-    // Host registers
-    const registerPromise = waitForMessage(host);
+    // Register & join
+    const regPromise = waitForMessage(host);
     host.send(JSON.stringify({ type: "register", token: "4321" }));
-    await registerPromise;
+    await regPromise;
 
-    // Client joins
-    const hostJoinPromise = waitForMessage(host);
-    const clientJoinPromise = waitForMessage(client);
+    const hostConnPromise = waitForMessage(host);
+    const clientConnPromise = waitForMessage(client);
     client.send(JSON.stringify({ type: "join", token: "4321" }));
-    await hostJoinPromise;
-    await clientJoinPromise;
+    await hostConnPromise;
+    await clientConnPromise;
 
-    // Host sends offer → client should receive it
-    const clientOfferPromise = waitForMessage(client);
-    host.send(JSON.stringify({ type: "offer", sdp: { type: "offer", sdp: "test-offer" } }));
-    const offerMsg = await clientOfferPromise;
+    // Host sends text → client should receive it
+    const clientTextPromise = waitForMessage(client);
+    host.send(JSON.stringify({ type: "text", content: "Hello from PC!" }));
+    const textMsg = await clientTextPromise;
 
-    expect(offerMsg.type).toBe("offer");
-    expect(offerMsg.sdp.sdp).toBe("test-offer");
+    expect(textMsg.type).toBe("text");
+    expect(textMsg.content).toBe("Hello from PC!");
 
-    // Client sends answer → host should receive it
-    const hostAnswerPromise = waitForMessage(host);
-    client.send(JSON.stringify({ type: "answer", sdp: { type: "answer", sdp: "test-answer" } }));
-    const answerMsg = await hostAnswerPromise;
+    // Client sends text → host should receive it
+    const hostTextPromise = waitForMessage(host);
+    client.send(JSON.stringify({ type: "text", content: "Hello from phone!" }));
+    const textMsg2 = await hostTextPromise;
 
-    expect(answerMsg.type).toBe("answer");
-    expect(answerMsg.sdp.sdp).toBe("test-answer");
+    expect(textMsg2.type).toBe("text");
+    expect(textMsg2.content).toBe("Hello from phone!");
+  });
+
+  it("should relay binary data between host and client", async () => {
+    const host = await createWsClient();
+    const client = await createWsClient();
+    clients.push(host, client);
+
+    // Register & join
+    const regPromise = waitForMessage(host);
+    host.send(JSON.stringify({ type: "register", token: "8888" }));
+    await regPromise;
+
+    const hostConnPromise = waitForMessage(host);
+    const clientConnPromise = waitForMessage(client);
+    client.send(JSON.stringify({ type: "join", token: "8888" }));
+    await hostConnPromise;
+    await clientConnPromise;
+
+    // Host sends binary → client should receive it
+    const testData = Buffer.from("test-binary-data-12345");
+    const clientBinaryPromise = waitForMessage(client);
+    host.send(testData);
+    const binaryMsg = await clientBinaryPromise;
+
+    expect(binaryMsg._binary).toBe(true);
+    expect(Buffer.from(binaryMsg.data).toString()).toBe("test-binary-data-12345");
   });
 
   it("should notify host when client disconnects", async () => {
@@ -154,23 +180,37 @@ describe("Signaling Server", () => {
     const client = await createWsClient();
     clients.push(host);
 
-    // Host registers
-    const registerPromise = waitForMessage(host);
+    // Register & join
+    const regPromise = waitForMessage(host);
     host.send(JSON.stringify({ type: "register", token: "7777" }));
-    await registerPromise;
+    await regPromise;
 
-    // Client joins
-    const hostJoinPromise = waitForMessage(host);
-    const clientJoinPromise = waitForMessage(client);
+    const hostConnPromise = waitForMessage(host);
+    const clientConnPromise = waitForMessage(client);
     client.send(JSON.stringify({ type: "join", token: "7777" }));
-    await hostJoinPromise;
-    await clientJoinPromise;
+    await hostConnPromise;
+    await clientConnPromise;
 
     // Client disconnects
     const hostDisconnectPromise = waitForMessage(host);
     client.close();
     const disconnectMsg = await hostDisconnectPromise;
 
-    expect(disconnectMsg.type).toBe("client-disconnected");
+    expect(disconnectMsg.type).toBe("peer-disconnected");
+  });
+
+  it("should respond to ping with pong", async () => {
+    const host = await createWsClient();
+    clients.push(host);
+
+    const regPromise = waitForMessage(host);
+    host.send(JSON.stringify({ type: "register", token: "3333" }));
+    await regPromise;
+
+    const pongPromise = waitForMessage(host);
+    host.send(JSON.stringify({ type: "ping" }));
+    const pongMsg = await pongPromise;
+
+    expect(pongMsg.type).toBe("pong");
   });
 });
