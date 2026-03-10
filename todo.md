@@ -26,4 +26,5 @@
 - [x] SEO修复：调整document.title长度到30-60字符
 - [x] 创建 sitemap.xml
 - [x] 创建 robots.txt
-- [ ] 提交到 Google Search Console 索引
+- [x] 提交到 Google Search Console 索引（sitemap已提交，URL已请求索引）
+- [x] 给发送和接收的文字内容添加复制按钮（改为始终可见，不再依赖hover）

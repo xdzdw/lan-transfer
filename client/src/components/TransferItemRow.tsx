@@ -92,12 +92,12 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
         </div>
         <button
           onClick={handleCopyText}
-          className="shrink-0 p-1.5 rounded-md hover:bg-muted transition-all opacity-0 group-hover:opacity-100 mt-0.5"
+          className="shrink-0 p-1.5 rounded-md hover:bg-muted active:bg-muted transition-all mt-0.5"
           title="Copy to clipboard"
         >
           {copied 
             ? <Check className="size-3.5 text-primary" /> 
-            : <Copy className="size-3.5 text-muted-foreground/40" />
+            : <Copy className="size-3.5 text-muted-foreground/60" />
           }
         </button>
       </div>
