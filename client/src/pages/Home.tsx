@@ -163,7 +163,7 @@ export default function Home() {
             <Smartphone className="size-5 text-foreground/70" />
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground">LAN Transfer</h1>
-          <p className="text-[11px] text-muted-foreground mt-1.5 font-mono tracking-wide">c.sum.pub</p>
+          <p className="text-[11px] text-muted-foreground mt-1.5 font-mono tracking-wide">t.sum.pub</p>
         </motion.div>
 
         <AnimatePresence mode="wait">
@@ -237,7 +237,7 @@ export default function Home() {
 
               {/* Steps */}
               <div className="space-y-3 text-left">
-                <Step num={1} text={<>Open <span className="font-mono font-medium text-foreground">c.sum.pub</span> on your phone</>} />
+                <Step num={1} text={<>Open <span className="font-mono font-medium text-foreground">t.sum.pub</span> on your phone</>} />
                 <Step num={2} text="Enter the 4-digit code above" />
                 <Step num={3} text="Start transferring files and text" />
               </div>
