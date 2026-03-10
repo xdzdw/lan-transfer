@@ -1,14 +1,5 @@
 /**
- * usePeerHost — PC端（Host）使用 BroadcastChannel 信令 + WebRTC
- * 
- * 由于这是纯静态站点，无法运行 WebSocket 服务端。
- * 方案：使用 BroadcastChannel 作为同源跨标签页信令，
- * 然后通过 WebRTC DataChannel 进行数据传输。
- * 
- * 对于真正的跨设备场景（手机和电脑不在同一浏览器），
- * 需要一个外部信令服务器。这里我们提供两种模式：
- * 1. BroadcastChannel 模式（同设备测试）
- * 2. 手动信令模式（通过复制粘贴 SDP）
+ * usePeerHost — PC端（Host）使用 WebSocket 信令服务器 + WebRTC
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -35,7 +26,12 @@ interface FileChunkMeta {
 }
 
 const CHUNK_SIZE = 64 * 1024; // 64KB
-const CHANNEL_PREFIX = "lan-transfer-";
+
+function getSignalingUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = window.location.host;
+  return `${protocol}//${host}/api/ws-signaling`;
+}
 
 export function usePeerHost() {
   const [token, setToken] = useState<string>("");
@@ -45,7 +41,7 @@ export function usePeerHost() {
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
-  const bcRef = useRef<BroadcastChannel | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const fileChunksRef = useRef<Map<string, { meta: FileChunkMeta; chunks: ArrayBuffer[]; received: number }>>(new Map());
 
   const addItem = useCallback((item: TransferItem) => {
@@ -111,6 +107,43 @@ export function usePeerHost() {
     }
   }, [addItem, updateItem]);
 
+  const createPeerConnection = useCallback((ws: WebSocket) => {
+    const pc = new RTCPeerConnection({
+      iceServers: [
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ],
+    });
+    peerRef.current = pc;
+
+    const dataChannel = pc.createDataChannel("transfer", { ordered: true });
+    dataChannel.binaryType = "arraybuffer";
+    channelRef.current = dataChannel;
+
+    dataChannel.onopen = () => {
+      setStatus("connected");
+      setError("");
+    };
+    dataChannel.onclose = () => {
+      setStatus("waiting");
+    };
+    dataChannel.onmessage = handleDataChannelMessage;
+
+    pc.onicecandidate = (e) => {
+      if (e.candidate && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+        setStatus("waiting");
+      }
+    };
+
+    return pc;
+  }, [handleDataChannelMessage]);
+
   const startHost = useCallback(async () => {
     try {
       // Generate 4-digit token
@@ -119,57 +152,78 @@ export function usePeerHost() {
       setStatus("waiting");
       setError("");
 
-      // Create BroadcastChannel for signaling
-      const bc = new BroadcastChannel(CHANNEL_PREFIX + t);
-      bcRef.current = bc;
+      const ws = new WebSocket(getSignalingUrl());
+      wsRef.current = ws;
 
-      bc.onmessage = async (event) => {
-        const msg = event.data;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "register", token: t }));
+      };
 
-        if (msg.type === "join") {
-          // Client wants to connect — create WebRTC peer
-          const pc = new RTCPeerConnection({
-            iceServers: [
-              { urls: "stun:stun.l.google.com:19302" },
-              { urls: "stun:stun1.l.google.com:19302" },
-            ],
-          });
-          peerRef.current = pc;
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
 
-          const dataChannel = pc.createDataChannel("transfer", { ordered: true });
-          dataChannel.binaryType = "arraybuffer";
-          channelRef.current = dataChannel;
-          
-          dataChannel.onopen = () => {
-            setStatus("connected");
-            setError("");
-          };
-          dataChannel.onclose = () => {
-            setStatus("waiting");
-          };
-          dataChannel.onmessage = handleDataChannelMessage;
+          switch (msg.type) {
+            case "registered":
+              console.log("[Host] Registered with token:", t);
+              break;
 
-          pc.onicecandidate = (e) => {
-            if (e.candidate) {
-              bc.postMessage({ type: "ice-candidate", candidate: e.candidate, from: "host" });
+            case "client-joined": {
+              console.log("[Host] Client joined, creating offer...");
+              const pc = createPeerConnection(ws);
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              ws.send(JSON.stringify({ type: "offer", sdp: pc.localDescription }));
+              break;
             }
-          };
 
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          bc.postMessage({ type: "offer", sdp: pc.localDescription });
-        } else if (msg.type === "answer") {
-          await peerRef.current?.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-        } else if (msg.type === "ice-candidate" && msg.from === "client") {
-          await peerRef.current?.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            case "answer": {
+              if (peerRef.current) {
+                await peerRef.current.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              }
+              break;
+            }
+
+            case "ice-candidate": {
+              if (peerRef.current && msg.candidate) {
+                await peerRef.current.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              }
+              break;
+            }
+
+            case "client-disconnected": {
+              channelRef.current?.close();
+              peerRef.current?.close();
+              channelRef.current = null;
+              peerRef.current = null;
+              setStatus("waiting");
+              break;
+            }
+
+            case "error":
+              setError(msg.message || "Connection error");
+              break;
+          }
+        } catch (err) {
+          console.error("[Host] Error processing message:", err);
         }
+      };
+
+      ws.onclose = () => {
+        console.log("[Host] WebSocket closed");
+      };
+
+      ws.onerror = (err) => {
+        console.error("[Host] WebSocket error:", err);
+        setError("Connection to signaling server failed");
+        setStatus("error");
       };
     } catch (err) {
       setError("Failed to start");
       setStatus("error");
       console.error(err);
     }
-  }, [handleDataChannelMessage]);
+  }, [createPeerConnection]);
 
   const sendText = useCallback((text: string) => {
     if (!channelRef.current || channelRef.current.readyState !== "open") return;
@@ -240,10 +294,10 @@ export function usePeerHost() {
   const disconnect = useCallback(() => {
     channelRef.current?.close();
     peerRef.current?.close();
-    bcRef.current?.close();
+    wsRef.current?.close();
     channelRef.current = null;
     peerRef.current = null;
-    bcRef.current = null;
+    wsRef.current = null;
     setStatus("idle");
     setToken("");
     setItems([]);

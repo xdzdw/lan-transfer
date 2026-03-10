@@ -1,5 +1,5 @@
 /**
- * usePeerClient — 手机端（Client）使用 BroadcastChannel 信令 + WebRTC
+ * usePeerClient — 手机端（Client）使用 WebSocket 信令服务器 + WebRTC
  */
 
 import { useCallback, useRef, useState } from "react";
@@ -14,7 +14,12 @@ interface FileChunkMeta {
 }
 
 const CHUNK_SIZE = 64 * 1024;
-const CHANNEL_PREFIX = "lan-transfer-";
+
+function getSignalingUrl(): string {
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const host = window.location.host;
+  return `${protocol}//${host}/api/ws-signaling`;
+}
 
 export function usePeerClient() {
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
@@ -23,7 +28,7 @@ export function usePeerClient() {
 
   const peerRef = useRef<RTCPeerConnection | null>(null);
   const channelRef = useRef<RTCDataChannel | null>(null);
-  const bcRef = useRef<BroadcastChannel | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
   const fileChunksRef = useRef<Map<string, { meta: FileChunkMeta; chunks: ArrayBuffer[]; received: number }>>(new Map());
 
   const addItem = useCallback((item: TransferItem) => {
@@ -94,70 +99,122 @@ export function usePeerClient() {
       setStatus("connecting");
       setError("");
 
-      const bc = new BroadcastChannel(CHANNEL_PREFIX + inputToken);
-      bcRef.current = bc;
+      const ws = new WebSocket(getSignalingUrl());
+      wsRef.current = ws;
 
-      // Set up a timeout for connection
+      // Connection timeout
       const timeout = setTimeout(() => {
-        if (status === "connecting") {
-          setError("No host found with this token. Make sure both devices have the same page open.");
-          setStatus("error");
-          bc.close();
+        if (ws.readyState !== WebSocket.CLOSED) {
+          ws.close();
         }
-      }, 10000);
+        setError("Connection timed out. Make sure the PC has the page open.");
+        setStatus("error");
+      }, 15000);
 
-      bc.onmessage = async (event) => {
-        const msg = event.data;
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: "join", token: inputToken }));
+      };
 
-        if (msg.type === "offer") {
-          clearTimeout(timeout);
-          
-          const pc = new RTCPeerConnection({
-            iceServers: [
-              { urls: "stun:stun.l.google.com:19302" },
-              { urls: "stun:stun1.l.google.com:19302" },
-            ],
-          });
-          peerRef.current = pc;
+      ws.onmessage = async (event) => {
+        try {
+          const msg = JSON.parse(event.data);
 
-          pc.ondatachannel = (e) => {
-            const channel = e.channel;
-            channelRef.current = channel;
-            channel.binaryType = "arraybuffer";
-            
-            channel.onopen = () => {
-              setStatus("connected");
-              setError("");
-            };
-            channel.onclose = () => {
-              setStatus("idle");
-            };
-            channel.onmessage = handleDataChannelMessage;
-          };
+          switch (msg.type) {
+            case "joined":
+              console.log("[Client] Joined room, waiting for offer...");
+              break;
 
-          pc.onicecandidate = (e) => {
-            if (e.candidate) {
-              bc.postMessage({ type: "ice-candidate", candidate: e.candidate, from: "client" });
+            case "offer": {
+              clearTimeout(timeout);
+              console.log("[Client] Received offer, creating answer...");
+
+              const pc = new RTCPeerConnection({
+                iceServers: [
+                  { urls: "stun:stun.l.google.com:19302" },
+                  { urls: "stun:stun1.l.google.com:19302" },
+                ],
+              });
+              peerRef.current = pc;
+
+              pc.ondatachannel = (e) => {
+                const channel = e.channel;
+                channelRef.current = channel;
+                channel.binaryType = "arraybuffer";
+
+                channel.onopen = () => {
+                  setStatus("connected");
+                  setError("");
+                };
+                channel.onclose = () => {
+                  setStatus("idle");
+                };
+                channel.onmessage = handleDataChannelMessage;
+              };
+
+              pc.onicecandidate = (e) => {
+                if (e.candidate && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: "ice-candidate", candidate: e.candidate }));
+                }
+              };
+
+              pc.onconnectionstatechange = () => {
+                if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+                  setStatus("idle");
+                }
+              };
+
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              ws.send(JSON.stringify({ type: "answer", sdp: pc.localDescription }));
+              break;
             }
-          };
 
-          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-          const answer = await pc.createAnswer();
-          await pc.setLocalDescription(answer);
-          bc.postMessage({ type: "answer", sdp: pc.localDescription });
-        } else if (msg.type === "ice-candidate" && msg.from === "host") {
-          await peerRef.current?.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            case "ice-candidate": {
+              if (peerRef.current && msg.candidate) {
+                await peerRef.current.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              }
+              break;
+            }
+
+            case "host-disconnected": {
+              clearTimeout(timeout);
+              channelRef.current?.close();
+              peerRef.current?.close();
+              channelRef.current = null;
+              peerRef.current = null;
+              setStatus("idle");
+              setError("Host disconnected");
+              break;
+            }
+
+            case "error": {
+              clearTimeout(timeout);
+              setError(msg.message || "Connection error");
+              setStatus("error");
+              break;
+            }
+          }
+        } catch (err) {
+          console.error("[Client] Error processing message:", err);
         }
       };
 
-      // Tell host we want to join
-      bc.postMessage({ type: "join" });
+      ws.onclose = () => {
+        console.log("[Client] WebSocket closed");
+      };
+
+      ws.onerror = () => {
+        clearTimeout(timeout);
+        setError("Connection to signaling server failed");
+        setStatus("error");
+      };
     } catch (err) {
       setError("Failed to connect");
       setStatus("error");
       console.error(err);
     }
-  }, [handleDataChannelMessage, status]);
+  }, [handleDataChannelMessage]);
 
   const sendText = useCallback((text: string) => {
     if (!channelRef.current || channelRef.current.readyState !== "open") return;
@@ -228,10 +285,10 @@ export function usePeerClient() {
   const disconnect = useCallback(() => {
     channelRef.current?.close();
     peerRef.current?.close();
-    bcRef.current?.close();
+    wsRef.current?.close();
     channelRef.current = null;
     peerRef.current = null;
-    bcRef.current = null;
+    wsRef.current = null;
     setStatus("idle");
     setItems([]);
   }, []);
