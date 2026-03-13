@@ -8,7 +8,9 @@
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { TransferItemRow } from "@/components/TransferItemRow";
+import { LangSwitch } from "@/components/LangSwitch";
 import type { TransferItem } from "@/hooks/usePeerHost";
+import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -32,6 +34,7 @@ interface TransferPanelProps {
 }
 
 export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role }: TransferPanelProps) {
+  const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -119,7 +122,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
           >
             <div className="flex flex-col items-center gap-3">
               <ArrowUpFromLine className="size-7 text-primary" />
-              <span className="text-sm font-medium text-primary">Drop files to send</span>
+              <span className="text-sm font-medium text-primary">{t("dropToSend")}</span>
             </div>
           </motion.div>
         )}
@@ -138,16 +141,19 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
             {role === "host" ? <Smartphone className="size-3.5" /> : <Monitor className="size-3.5" />}
           </div>
           <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
-            Connected
+            {t("connected")}
           </span>
         </div>
-        <button
-          onClick={onDisconnect}
-          className="text-[10px] font-mono text-muted-foreground/50 hover:text-destructive transition-colors flex items-center gap-1"
-        >
-          <X className="size-3" />
-          End
-        </button>
+        <div className="flex items-center gap-3">
+          <LangSwitch />
+          <button
+            onClick={onDisconnect}
+            className="text-[10px] font-mono text-muted-foreground/50 hover:text-destructive transition-colors flex items-center gap-1"
+          >
+            <X className="size-3" />
+            {t("end")}
+          </button>
+        </div>
       </div>
       
       <Separator />
@@ -157,9 +163,9 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full py-16 text-muted-foreground">
             <FileUp className="size-7 mb-4 opacity-30" />
-            <p className="text-sm font-medium">Ready to transfer</p>
+            <p className="text-sm font-medium">{t("readyToTransfer")}</p>
             <p className="text-[11px] mt-1.5 text-muted-foreground/60">
-              {role === "host" ? "Drag files here or type below" : "Send text or attach files below"}
+              {role === "host" ? t("dragFilesHere") : t("sendTextOrAttach")}
             </p>
           </div>
         ) : (
@@ -189,7 +195,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
               value={text}
               onChange={(e) => setText(e.target.value)}
               onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
+              placeholder={t("typeMessage")}
               rows={1}
               className={cn(
                 "w-full resize-none rounded-lg border border-input bg-muted/30 px-3 py-2.5 pr-10 text-sm",
@@ -207,7 +213,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
             <button
               onClick={() => fileInputRef.current?.click()}
               className="absolute right-2.5 bottom-2.5 p-1 rounded hover:bg-muted transition-colors text-muted-foreground/50 hover:text-muted-foreground"
-              title="Attach file"
+              title={t("attachFile")}
             >
               <Paperclip className="size-4" />
             </button>

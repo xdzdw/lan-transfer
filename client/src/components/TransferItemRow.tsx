@@ -8,6 +8,7 @@
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize, formatTime, getFileCategory } from "@/lib/format";
 import type { TransferItem } from "@/hooks/usePeerHost";
+import { useI18n } from "@/contexts/I18nContext";
 import {
   ArrowDown,
   ArrowUp,
@@ -46,13 +47,14 @@ interface TransferItemRowProps {
 }
 
 export function TransferItemRow({ item }: TransferItemRowProps) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
 
   const handleCopyText = async () => {
     if (item.content) {
       await navigator.clipboard.writeText(item.content);
       setCopied(true);
-      toast.success("Copied to clipboard");
+      toast.success(t("copiedToClipboard"));
       setTimeout(() => setCopied(false), 2000);
     }
   };
@@ -67,7 +69,7 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      toast.success("Download started");
+      toast.success(t("downloadStarted"));
     }
   };
 
@@ -93,7 +95,7 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
         <button
           onClick={handleCopyText}
           className="shrink-0 p-1.5 rounded-md hover:bg-muted active:bg-muted transition-all mt-0.5"
-          title="Copy to clipboard"
+          title={t("copyToClipboard")}
         >
           {copied 
             ? <Check className="size-3.5 text-primary" /> 
@@ -145,7 +147,7 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
           <button
             onClick={handleDownload}
             className="p-1.5 rounded-md hover:bg-muted transition-all"
-            title="Save file"
+            title={t("saveFile")}
           >
             <Download className="size-3.5 text-primary" />
           </button>

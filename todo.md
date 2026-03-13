@@ -28,3 +28,7 @@
 - [x] 创建 robots.txt
 - [x] 提交到 Google Search Console 索引（sitemap已提交，URL已请求索引）
 - [x] 给发送和接收的文字内容添加复制按钮（改为始终可见，不再依赖hover）
+- [x] 将网站标题从“Quick Transfer - 手机电脑互传”改为全英文（用户手动在Settings中修改）
+- [x] 创建 i18n 语言上下文和翻译文件
+- [x] 将所有页面硬编码文字替换为 i18n 调用
+- [x] 添加语言切换按钮

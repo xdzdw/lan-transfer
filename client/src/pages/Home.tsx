@@ -9,9 +9,11 @@
  */
 
 import { TransferPanel } from "@/components/TransferPanel";
+import { LangSwitch } from "@/components/LangSwitch";
 import { useIsMobile } from "@/hooks/useMobile";
 import { usePeerClient } from "@/hooks/usePeerClient";
 import { usePeerHost } from "@/hooks/usePeerHost";
+import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -28,7 +30,40 @@ import { useEffect, useRef, useState } from "react";
 
 type Mode = "host" | "client";
 
+/** Helper to render translation strings containing <mono>...</mono> tags */
+function RichText({ text }: { text: string }) {
+  const parts = text.split(/(<mono>.*?<\/mono>)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const match = part.match(/^<mono>(.*)<\/mono>$/);
+        if (match) {
+          return <span key={i} className="font-mono font-medium text-foreground">{match[1]}</span>;
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
+/** Helper for tech detail rich text with mono spans */
+function TechRichText({ text }: { text: string }) {
+  const parts = text.split(/(<mono>.*?<\/mono>)/g);
+  return (
+    <>
+      {parts.map((part, i) => {
+        const match = part.match(/^<mono>(.*)<\/mono>$/);
+        if (match) {
+          return <span key={i} className="font-mono text-muted-foreground/80">{match[1]}</span>;
+        }
+        return <span key={i}>{part}</span>;
+      })}
+    </>
+  );
+}
+
 export default function Home() {
+  const { t } = useI18n();
   const isMobile = useIsMobile();
   const [mode, setMode] = useState<Mode | null>(null);
   const [tokenInput, setTokenInput] = useState(["", "", "", ""]);
@@ -39,8 +74,8 @@ export default function Home() {
 
   // Set document title for SEO
   useEffect(() => {
-    document.title = "Quick Transfer - Send Files Between Devices";
-  }, []);
+    document.title = t("documentTitle");
+  }, [t]);
 
   // Auto-detect mode on mount
   useEffect(() => {
@@ -157,6 +192,11 @@ export default function Home() {
   return (
     <div className="min-h-screen min-h-[100dvh] flex flex-col items-center justify-center bg-background px-5">
       <div className="w-full max-w-xs">
+        {/* Language switch - top right */}
+        <div className="fixed top-4 right-4 z-50">
+          <LangSwitch />
+        </div>
+
         {/* Logo / Title */}
         <motion.div
           initial={{ opacity: 0, y: -10 }}
@@ -170,7 +210,7 @@ export default function Home() {
             <Smartphone className="size-5 text-foreground/70" />
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Quick Transfer</h1>
-          <h2 className="text-xs text-muted-foreground mt-1.5 font-medium">Send Files & Text Between Devices Instantly</h2>
+          <h2 className="text-xs text-muted-foreground mt-1.5 font-medium">{t("subtitle")}</h2>
           <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">t.sum.pub</p>
         </motion.div>
 
@@ -186,7 +226,7 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {host.status === "waiting" ? "Waiting for connection" : "Initializing"}
+                {host.status === "waiting" ? t("waitingForConnection") : t("initializing")}
               </p>
 
               {/* Token display */}
@@ -218,7 +258,7 @@ export default function Home() {
                       <span className="relative inline-flex size-2 rounded-full bg-primary" />
                     </span>
                     <span className="text-[11px] font-mono text-muted-foreground">
-                      Enter this code on your phone
+                      {t("enterCodeOnPhone")}
                     </span>
                   </motion.div>
                 </div>
@@ -238,16 +278,16 @@ export default function Home() {
                   <AlertCircle className="size-3.5 shrink-0" />
                   <span>{host.error}</span>
                   <button onClick={handleRetry} className="ml-1 underline underline-offset-2 hover:text-destructive/80">
-                    Retry
+                    {t("retry")}
                   </button>
                 </motion.div>
               )}
 
               {/* Steps */}
               <div className="space-y-3 text-left">
-                <Step num={1} text={<>Open <span className="font-mono font-medium text-foreground">t.sum.pub</span> on another device</>} />
-                <Step num={2} text="Enter the 4-digit code above" />
-                <Step num={3} text="Start transferring files and text" />
+                <Step num={1} text={<RichText text={t("step1")} />} />
+                <Step num={2} text={t("step2")} />
+                <Step num={3} text={t("step3")} />
               </div>
             </motion.div>
           ) : (
@@ -261,7 +301,7 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {client.status === "connecting" ? "Connecting" : "Enter code from PC"}
+                {client.status === "connecting" ? t("connecting") : t("enterCodeFromPC")}
               </p>
 
               {/* Token input */}
@@ -301,7 +341,7 @@ export default function Home() {
                   className="flex items-center justify-center gap-2 mb-6"
                 >
                   <Loader2 className="size-3.5 animate-spin text-primary" />
-                  <span className="text-xs font-mono text-muted-foreground">Connecting...</span>
+                  <span className="text-xs font-mono text-muted-foreground">{t("connectingDots")}</span>
                 </motion.div>
               )}
 
@@ -321,7 +361,7 @@ export default function Home() {
                     className="flex items-center gap-1.5 text-[11px] font-mono text-muted-foreground hover:text-foreground transition-colors"
                   >
                     <RefreshCw className="size-3" />
-                    Try again
+                    {t("tryAgain")}
                   </button>
                 </motion.div>
               )}
@@ -329,7 +369,7 @@ export default function Home() {
               {/* Instructions */}
               {client.status !== "connecting" && !client.error && (
                 <p className="text-xs text-muted-foreground">
-                  Look at your PC screen for the 4-digit code
+                  {t("lookAtPC")}
                 </p>
               )}
             </motion.div>
@@ -357,7 +397,7 @@ export default function Home() {
             onClick={handleSwitchMode}
             className="text-[11px] font-mono text-muted-foreground/60 hover:text-muted-foreground transition-colors"
           >
-            Switch to {mode === "host" ? "mobile" : "PC"} mode
+            {mode === "host" ? t("switchToMobile") : t("switchToPC")}
           </button>
         </motion.div>
       </div>
@@ -375,6 +415,7 @@ function Step({ num, text }: { num: number; text: React.ReactNode }) {
 }
 
 function TechDetails() {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
 
   return (
@@ -384,7 +425,7 @@ function TechDetails() {
         className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground/50 hover:text-muted-foreground/70 transition-colors"
       >
         <Shield className="size-3" />
-        <span>No files stored on server</span>
+        <span>{t("noFilesStored")}</span>
         <ChevronDown className={cn("size-3 transition-transform duration-200", open && "rotate-180")} />
       </button>
 
@@ -400,18 +441,18 @@ function TechDetails() {
             <div className="mt-4 mx-auto max-w-[280px] text-left space-y-2.5 text-[11px] text-muted-foreground/60 leading-relaxed">
               <div className="flex gap-2">
                 <span className="font-mono text-primary/60 shrink-0 mt-px">WSS</span>
-                <span>Devices connect via <span className="font-mono text-muted-foreground/80">WebSocket (wss://)</span> with TLS encryption. Data is relayed in real-time through the server.</span>
+                <span><TechRichText text={t("techWSS")} /></span>
               </div>
               <div className="flex gap-2">
                 <span className="font-mono text-primary/60 shrink-0 mt-px">MEM</span>
-                <span>Files stream through server memory only. Zero disk writes, zero database storage. Data exists in transit, never at rest.</span>
+                <span>{t("techMEM")}</span>
               </div>
               <div className="flex gap-2">
                 <span className="font-mono text-primary/60 shrink-0 mt-px">TTL</span>
-                <span>Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.</span>
+                <span>{t("techTTL")}</span>
               </div>
               <div className="mt-3 pt-2.5 border-t border-border/30 text-[10px] font-mono text-muted-foreground/40">
-                Protocol: WSS &middot; Chunk size: 64KB &middot; No logs &middot; No analytics on content
+                {t("techFooter")}
               </div>
             </div>
           </motion.div>
