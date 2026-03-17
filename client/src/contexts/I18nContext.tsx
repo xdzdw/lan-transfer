@@ -5,7 +5,7 @@ export type Lang = "en" | "zh";
 const translations = {
   en: {
     // Home page - title area
-    subtitle: "Send Files & Text Between Devices Instantly",
+    subtitle: "Transfer Files from Phone to PC Instantly",
 
     // Host mode
     waitingForConnection: "Waiting for connection",
@@ -55,11 +55,11 @@ const translations = {
     goBackHome: "Go back home",
 
     // Document title
-    documentTitle: "Quick Transfer - Send Files Between Devices",
+    documentTitle: "Quick Transfer \u2013 Transfer Files from Phone to PC | No App Needed",
   },
   zh: {
     // 首页 - 标题区域
-    subtitle: "在设备之间即时传输文件和文字",
+    subtitle: "手机电脑互传文件，无需安装应用",
 
     // Host 模式
     waitingForConnection: "等待连接",
@@ -109,7 +109,7 @@ const translations = {
     goBackHome: "返回首页",
 
     // 页面标题
-    documentTitle: "Quick Transfer - 跨设备文件传输",
+    documentTitle: "Quick Transfer \u2013 手机电脑互传文件 | 无需安装应用",
   },
 } as const;
 

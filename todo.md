@@ -32,3 +32,10 @@
 - [x] 创建 i18n 语言上下文和翻译文件
 - [x] 将所有页面硬编码文字替换为 i18n 调用
 - [x] 添加语言切换按钮
+- [x] SEO优化：针对 "transfer files from phone to pc" 关键词优化 title 和 meta description
+- [x] SEO优化：更新 keywords meta 标签包含目标关键词及变体
+- [x] SEO优化：优化页面 H1/H2 标题包含目标关键词
+- [x] SEO优化：添加 Open Graph 和 Twitter Card 标签
+- [x] SEO优化：添加 JSON-LD 结构化数据（WebApplication schema）
+- [x] SEO优化：优化页面正文内容增加关键词密度
+- [x] SEO优化：更新 sitemap.xml
