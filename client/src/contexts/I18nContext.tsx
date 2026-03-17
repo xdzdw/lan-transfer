@@ -55,7 +55,7 @@ const translations = {
     goBackHome: "Go back home",
 
     // Document title
-    documentTitle: "Quick Transfer \u2013 Transfer Files from Phone to PC | No App Needed",
+    documentTitle: "Quick Transfer \u2013 Phone to PC File Transfer",
   },
   zh: {
     // 首页 - 标题区域
@@ -109,7 +109,7 @@ const translations = {
     goBackHome: "返回首页",
 
     // 页面标题
-    documentTitle: "Quick Transfer \u2013 手机电脑互传文件 | 无需安装应用",
+    documentTitle: "Quick Transfer \u2013 手机电脑互传文件",
   },
 } as const;
 
