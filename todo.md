@@ -43,3 +43,4 @@
 - [x] SEO修复：title从64字符缩至30-60字符（44字符）
 - [x] SEO修复：description从161字符缩至50-160字符（129字符）
 - [x] 修复文件传输不完整问题（添加chunk编号、顺序队列、文件大小校验）
+- [x] 将"Switch to mobile mode"改为"Switch to mobile or another device"
