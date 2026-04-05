@@ -49,3 +49,7 @@
 - [x] 混合传输方案：重写Client端支持WebRTC P2P + WebSocket回退
 - [x] 混合传输方案：UI显示当前传输模式（P2P/Relay）
 - [x] 混合传输方案：更新单元测试覆盖WebRTC信令中继（14个测试全部通过）
+- [x] 客户端WebRTC传输层白盒测试：P2P连接建立流程
+- [x] 客户端WebRTC传输层白盒测试：DataChannel消息收发
+- [x] 客户端WebRTC传输层白盒测试：P2P失败自动回退relay
+- [x] 客户端WebRTC传输层白盒测试：sendViaTransport优先级选择
