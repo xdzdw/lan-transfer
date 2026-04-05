@@ -182,6 +182,7 @@ export default function Home() {
               }
             }}
             role={mode === "host" ? "host" : "client"}
+            transportMode={mode === "host" ? host.transportMode : client.transportMode}
           />
         </div>
       </div>

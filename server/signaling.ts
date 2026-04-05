@@ -1,9 +1,17 @@
 /**
- * WebSocket Relay Server for Quick Transfer
+ * WebSocket Relay + Signaling Server for Quick Transfer
  * 
- * Pure WebSocket relay approach — no WebRTC needed.
- * A host (PC) registers with a 4-digit token, a client (mobile) joins by token.
- * All data (text messages, file metadata, file chunks) is relayed through the server.
+ * Hybrid approach:
+ * 1. WebSocket always used for signaling (register, join, connected)
+ * 2. After connection, peers attempt WebRTC P2P via SDP/ICE exchange
+ * 3. If WebRTC succeeds → data flows P2P (fast, local network)
+ * 4. If WebRTC fails → data flows through WebSocket relay (fallback)
+ * 
+ * Message types:
+ * - register/join/connected/peer-disconnected: room management
+ * - rtc-offer/rtc-answer/rtc-ice: WebRTC signaling (relayed to peer)
+ * - text/file-meta/file-complete/binary: data transfer (relay fallback)
+ * - ping/pong: keep-alive
  */
 
 import { WebSocketServer, WebSocket } from "ws";
@@ -49,7 +57,7 @@ export function setupSignalingServer(server: Server) {
 
     ws.on("message", (data: Buffer | ArrayBuffer | Buffer[], isBinary: boolean) => {
       try {
-        // Binary data — relay file chunks directly to the peer
+        // Binary data — relay file chunks directly to the peer (fallback mode)
         if (isBinary) {
           if (!currentToken || !currentRole) return;
           const room = rooms.get(currentToken);
@@ -84,7 +92,7 @@ export function setupSignalingServer(server: Server) {
             rooms.set(token, { token, host: ws, client: null, createdAt: Date.now() });
             currentToken = token;
             currentRole = "host";
-            console.log(`[Relay] Host registered token=${token}, total rooms=${rooms.size}, all tokens=[${Array.from(rooms.keys()).join(',')}]`);
+            console.log(`[Relay] Host registered token=${token}, total rooms=${rooms.size}`);
             ws.send(JSON.stringify({ type: "registered", token }));
             break;
           }
@@ -92,7 +100,7 @@ export function setupSignalingServer(server: Server) {
           case "join": {
             const token = msg.token;
             const room = rooms.get(token);
-            console.log(`[Relay] Client join request token=${token}, room exists=${!!room}, host open=${room?.host?.readyState === WebSocket.OPEN}, total rooms=${rooms.size}, all tokens=[${Array.from(rooms.keys()).join(',')}]`);
+            console.log(`[Relay] Client join request token=${token}, room exists=${!!room}`);
 
             if (!room || !room.host || room.host.readyState !== WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "error", message: "No host found with this token" }));
@@ -114,10 +122,24 @@ export function setupSignalingServer(server: Server) {
             break;
           }
 
+          // WebRTC signaling — relay SDP and ICE candidates between peers
+          case "rtc-offer":
+          case "rtc-answer":
+          case "rtc-ice": {
+            if (!currentToken || !currentRole) return;
+            const room = rooms.get(currentToken);
+            if (!room) return;
+            const target = currentRole === "host" ? room.client : room.host;
+            if (target && target.readyState === WebSocket.OPEN) {
+              target.send(JSON.stringify(msg));
+            }
+            break;
+          }
+
+          // Data relay (fallback when WebRTC not available)
           case "text":
           case "file-meta":
           case "file-complete": {
-            // Relay JSON messages to the peer
             if (!currentToken || !currentRole) return;
             const room = rooms.get(currentToken);
             if (!room) return;
@@ -168,5 +190,5 @@ export function setupSignalingServer(server: Server) {
     });
   });
 
-  console.log("[Relay] WebSocket relay server ready on /api/ws-signaling");
+  console.log("[Relay] Hybrid WebSocket relay + WebRTC signaling server ready on /api/ws-signaling");
 }

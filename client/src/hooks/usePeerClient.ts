@@ -1,9 +1,13 @@
 /**
- * usePeerClient — 手机端（Client）使用 WebSocket 中继
+ * usePeerClient — 手机端（Client）混合传输
  * 
- * No WebRTC — all data flows through the WebSocket relay server.
+ * Hybrid approach:
+ * 1. WebSocket connects to server, joins room via token
+ * 2. Once connected, receives WebRTC offer from host
+ * 3. Creates WebRTC answer → DataChannel opens → P2P mode
+ * 4. If WebRTC fails/times out → automatic fallback to WebSocket relay
  * 
- * File transfer protocol:
+ * File transfer protocol (same for both P2P and relay):
  * 1. Sender sends file-meta JSON with { id, name, size, mimeType, totalChunks }
  * 2. Sender sends binary chunks: [36-byte UUID][4-byte chunk index (big-endian)][chunk data]
  * 3. Sender sends file-complete JSON with { id }
@@ -12,6 +16,14 @@
 
 import { useCallback, useRef, useState } from "react";
 import type { TransferItem } from "./usePeerHost";
+import {
+  createClientRTC,
+  handleRTCSignaling,
+  sendViaTransport,
+  getTransportBufferedAmount,
+  type WebRTCTransport,
+  type TransportMode,
+} from "@/lib/webrtc";
 
 interface FileChunkMeta {
   id: string;
@@ -23,9 +35,9 @@ interface FileChunkMeta {
 
 interface FileReceiveState {
   meta: FileChunkMeta;
-  chunks: Map<number, ArrayBuffer>; // indexed by chunk number for ordered assembly
-  received: number; // total bytes received
-  pendingComplete: boolean; // file-complete signal received before all chunks processed
+  chunks: Map<number, ArrayBuffer>;
+  received: number;
+  pendingComplete: boolean;
 }
 
 const CHUNK_SIZE = 64 * 1024;
@@ -40,11 +52,12 @@ export function usePeerClient() {
   const [status, setStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [items, setItems] = useState<TransferItem[]>([]);
   const [error, setError] = useState<string>("");
+  const [transportMode, setTransportMode] = useState<TransportMode>("relay");
 
   const wsRef = useRef<WebSocket | null>(null);
+  const rtcRef = useRef<WebRTCTransport | null>(null);
   const fileChunksRef = useRef<Map<string, FileReceiveState>>(new Map());
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  // Queue for processing binary messages sequentially
   const binaryQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const addItem = useCallback((item: TransferItem) => {
@@ -58,11 +71,8 @@ export function usePeerClient() {
   const assembleFile = useCallback((fileId: string) => {
     const entry = fileChunksRef.current.get(fileId);
     if (!entry) return;
-
-    // Check if all bytes received
     if (entry.received < entry.meta.size) return;
 
-    // Assemble chunks in order
     const orderedChunks: ArrayBuffer[] = [];
     for (let i = 0; i < entry.meta.totalChunks; i++) {
       const chunk = entry.chunks.get(i);
@@ -76,8 +86,6 @@ export function usePeerClient() {
     }
 
     const blob = new Blob(orderedChunks, { type: entry.meta.mimeType || "application/octet-stream" });
-
-    // Verify size
     if (blob.size !== entry.meta.size) {
       console.error(`[Client] File size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
       updateItem(fileId, { status: "error", progress: 0 });
@@ -96,10 +104,8 @@ export function usePeerClient() {
     const idBytes = new Uint8Array(buffer, 0, 36);
     const fileId = decoder.decode(idBytes);
 
-    // Read chunk index (4 bytes, big-endian uint32)
     const indexView = new DataView(buffer, 36, 4);
-    const chunkIndex = indexView.getUint32(0, false); // big-endian
-
+    const chunkIndex = indexView.getUint32(0, false);
     const chunkData = buffer.slice(HEADER_SIZE);
 
     const entry = fileChunksRef.current.get(fileId);
@@ -110,15 +116,22 @@ export function usePeerClient() {
     const progress = Math.min(99, Math.round((entry.received / entry.meta.size) * 100));
     updateItem(fileId, { progress, status: "transferring" });
 
-    // If file-complete was already received and all bytes are here, assemble
     if (entry.pendingComplete && entry.received >= entry.meta.size) {
       assembleFile(fileId);
     }
   }, [updateItem, assembleFile]);
 
-  const handleWsMessage = useCallback((event: MessageEvent) => {
+  /** Handle incoming data (from either DataChannel or WebSocket) */
+  const handleDataMessage = useCallback((event: MessageEvent) => {
     try {
-      // Binary data — file chunk, process sequentially via queue
+      // Binary data — file chunk
+      if (event.data instanceof ArrayBuffer) {
+        binaryQueueRef.current = binaryQueueRef.current.then(() => {
+          processBinaryChunk(event.data as ArrayBuffer);
+        });
+        return;
+      }
+
       if (event.data instanceof Blob) {
         binaryQueueRef.current = binaryQueueRef.current.then(() =>
           event.data.arrayBuffer().then((buffer: ArrayBuffer) => {
@@ -132,11 +145,6 @@ export function usePeerClient() {
       const msg = JSON.parse(event.data);
 
       switch (msg.type) {
-        case "connected":
-          setStatus("connected");
-          setError("");
-          break;
-
         case "text":
           addItem({
             id: crypto.randomUUID(),
@@ -174,17 +182,91 @@ export function usePeerClient() {
           const entry = fileChunksRef.current.get(msg.id);
           if (entry) {
             entry.pendingComplete = true;
-            // Process after current binary queue drains
             binaryQueueRef.current = binaryQueueRef.current.then(() => {
               assembleFile(msg.id);
             });
           }
           break;
         }
+      }
+    } catch (err) {
+      console.error("[Client] Error handling data message:", err);
+    }
+  }, [addItem, processBinaryChunk, assembleFile]);
+
+  /** Handle WebRTC offer from host — create answer and establish P2P */
+  const handleRTCOffer = useCallback((ws: WebSocket, offer: RTCSessionDescriptionInit) => {
+    console.log("[Client] Received WebRTC offer, creating answer...");
+    setTransportMode("upgrading");
+
+    const transport = createClientRTC(
+      ws,
+      offer,
+      // onOpen — DataChannel is ready
+      () => {
+        rtcRef.current = transport;
+        setTransportMode("p2p");
+        console.log("[Client] WebRTC P2P established! Transfers will use direct connection.");
+      },
+      // onMessage — data from DataChannel
+      handleDataMessage,
+      // onClose — DataChannel closed, fall back to relay
+      () => {
+        console.log("[Client] DataChannel closed, falling back to relay");
+        setTransportMode("relay");
+      },
+      // onFail — WebRTC failed, stay on relay
+      () => {
+        console.log("[Client] WebRTC failed, using relay mode");
+        setTransportMode("relay");
+      },
+    );
+
+    rtcRef.current = transport;
+  }, [handleDataMessage]);
+
+  const handleWsMessage = useCallback((event: MessageEvent) => {
+    try {
+      // Binary data — file chunk via relay
+      if (event.data instanceof Blob) {
+        handleDataMessage(event);
+        return;
+      }
+
+      const msg = JSON.parse(event.data);
+
+      switch (msg.type) {
+        case "connected":
+          setStatus("connected");
+          setError("");
+          break;
+
+        // WebRTC signaling messages
+        case "rtc-offer":
+          if (wsRef.current && msg.sdp) {
+            handleRTCOffer(wsRef.current, msg.sdp);
+          }
+          break;
+
+        case "rtc-ice":
+          handleRTCSignaling(rtcRef.current, msg);
+          break;
+
+        // Data relay messages (when in relay mode)
+        case "text":
+        case "file-meta":
+        case "file-complete":
+          handleDataMessage(event);
+          break;
 
         case "peer-disconnected":
           setStatus("idle");
           setError("Host disconnected");
+          setTransportMode("relay");
+          if (rtcRef.current) {
+            rtcRef.current.close();
+            rtcRef.current = null;
+          }
           break;
 
         case "error":
@@ -198,19 +280,19 @@ export function usePeerClient() {
     } catch (err) {
       console.error("[Client] Error handling message:", err);
     }
-  }, [addItem, updateItem, processBinaryChunk, assembleFile]);
+  }, [handleDataMessage, handleRTCOffer]);
 
   const connect = useCallback((inputToken: string) => {
     try {
       setStatus("connecting");
       setError("");
       setItems([]);
+      setTransportMode("relay");
       fileChunksRef.current.clear();
 
       const ws = new WebSocket(getWsUrl());
       wsRef.current = ws;
 
-      // Connection timeout
       const timeout = setTimeout(() => {
         if (ws.readyState !== WebSocket.CLOSED) ws.close();
         setError("Connection timed out. Make sure the PC has the page open.");
@@ -219,7 +301,6 @@ export function usePeerClient() {
 
       ws.onopen = () => {
         ws.send(JSON.stringify({ type: "join", token: inputToken }));
-        // Keep-alive ping
         pingRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ping" }));
@@ -228,7 +309,6 @@ export function usePeerClient() {
       };
 
       ws.onmessage = (event) => {
-        // Clear timeout on first meaningful response
         if (typeof event.data === "string") {
           try {
             const msg = JSON.parse(event.data);
@@ -260,10 +340,10 @@ export function usePeerClient() {
 
   const sendText = useCallback((text: string) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const jsonStr = JSON.stringify({ type: "text", content: text });
+    const mode = sendViaTransport(rtcRef.current, ws, jsonStr);
 
     const id = crypto.randomUUID();
-    ws.send(JSON.stringify({ type: "text", content: text }));
     addItem({
       id,
       type: "text",
@@ -273,12 +353,11 @@ export function usePeerClient() {
       timestamp: Date.now(),
       status: "done",
     });
+    console.log(`[Client] Sent text via ${mode}`);
   }, [addItem]);
 
   const sendFile = useCallback(async (file: File) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
     const id = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
@@ -293,12 +372,12 @@ export function usePeerClient() {
       status: "transferring",
     });
 
-    ws.send(JSON.stringify({
+    const metaStr = JSON.stringify({
       type: "file-meta",
       meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
-    }));
+    });
+    sendViaTransport(rtcRef.current, ws, metaStr);
 
-    // Send file chunks as binary: [36-byte UUID][4-byte chunk index][chunk data]
     const buffer = await file.arrayBuffer();
 
     for (let i = 0; i < totalChunks; i++) {
@@ -310,35 +389,38 @@ export function usePeerClient() {
       const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
       const view = new Uint8Array(combined);
       view.set(idBytes, 0);
-      // Write chunk index as 4-byte big-endian uint32
       const indexView = new DataView(combined, 36, 4);
-      indexView.setUint32(0, i, false); // big-endian
+      indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait if buffer is full
-      while (ws.bufferedAmount > 1024 * 1024) {
+      while (getTransportBufferedAmount(rtcRef.current, ws) > 1024 * 1024) {
         await new Promise(resolve => setTimeout(resolve, 50));
       }
 
-      ws.send(combined);
+      sendViaTransport(rtcRef.current, ws, combined);
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
     }
 
-    // Send completion signal
-    ws.send(JSON.stringify({ type: "file-complete", id }));
+    const completeStr = JSON.stringify({ type: "file-complete", id });
+    sendViaTransport(rtcRef.current, ws, completeStr);
     updateItem(id, { progress: 100, status: "done" });
   }, [addItem, updateItem]);
 
   const disconnect = useCallback(() => {
     if (pingRef.current) clearInterval(pingRef.current);
+    if (rtcRef.current) {
+      rtcRef.current.close();
+      rtcRef.current = null;
+    }
     wsRef.current?.close();
     wsRef.current = null;
     setStatus("idle");
     setItems([]);
+    setTransportMode("relay");
     fileChunksRef.current.clear();
   }, []);
 
-  return { status, items, error, connect, sendText, sendFile, disconnect };
+  return { status, items, error, transportMode, connect, sendText, sendFile, disconnect };
 }

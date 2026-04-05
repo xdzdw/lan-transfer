@@ -29,10 +29,15 @@ const translations = {
 
     // Privacy / tech details
     noFilesStored: "No files stored on server",
-    techWSS: "Devices connect via <mono>WebSocket (wss://)</mono> with TLS encryption. Data is relayed in real-time through the server.",
+    techWSS: "Devices connect via <mono>WebSocket (wss://)</mono> for signaling. When possible, <mono>WebRTC</mono> establishes a direct P2P connection for faster transfers on the same network.",
     techMEM: "Files stream through server memory only. Zero disk writes, zero database storage. Data exists in transit, never at rest.",
     techTTL: "Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.",
-    techFooter: "Protocol: WSS · Chunk size: 64KB · No logs · No analytics on content",
+    techFooter: "Protocol: WSS + WebRTC · Chunk size: 64KB · No logs · No analytics on content",
+
+    // Transport mode
+    upgrading: "Upgrading",
+    relay: "Relay",
+    p2pDirect: "P2P Direct",
 
     // Transfer panel
     connected: "Connected",
@@ -83,10 +88,15 @@ const translations = {
 
     // 隐私 / 技术细节
     noFilesStored: "服务器不存储任何文件",
-    techWSS: "设备通过 <mono>WebSocket (wss://)</mono> 连接，使用 TLS 加密。数据通过服务器实时中继传输。",
+    techWSS: "设备通过 <mono>WebSocket (wss://)</mono> 进行信令连接。尽可能使用 <mono>WebRTC</mono> 建立 P2P 直连，同网络传输更快。",
     techMEM: "文件仅通过服务器内存流转。零磁盘写入，零数据库存储。数据仅在传输中存在，不会持久保存。",
     techTTL: "会话是临时的。断开连接后房间即销毁。闲置房间30分钟后自动清除。",
-    techFooter: "协议: WSS · 分块大小: 64KB · 无日志 · 不分析传输内容",
+    techFooter: "协议: WSS + WebRTC · 分块大小: 64KB · 无日志 · 不分析传输内容",
+
+    // 传输模式
+    upgrading: "升级中",
+    relay: "中继",
+    p2pDirect: "P2P 直连",
 
     // 传输面板
     connected: "已连接",

@@ -44,3 +44,8 @@
 - [x] SEO修复：description从161字符缩至50-160字符（129字符）
 - [x] 修复文件传输不完整问题（添加chunk编号、顺序队列、文件大小校验）
 - [x] 将"Switch to mobile mode"改为"Switch to mobile or another device"
+- [x] 混合传输方案：更新服务器信令支持WebRTC SDP/ICE中继
+- [x] 混合传输方案：重写Host端支持WebRTC P2P + WebSocket回退
+- [x] 混合传输方案：重写Client端支持WebRTC P2P + WebSocket回退
+- [x] 混合传输方案：UI显示当前传输模式（P2P/Relay）
+- [x] 混合传输方案：更新单元测试覆盖WebRTC信令中继（14个测试全部通过）

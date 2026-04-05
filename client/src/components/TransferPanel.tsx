@@ -3,6 +3,8 @@
  * 
  * Design: Swiss Utility — clean vertical layout, text input at bottom,
  * file drop zone covers the entire panel, transfer history scrolls above.
+ * 
+ * Now includes transport mode indicator (P2P / Relay / Upgrading)
  */
 
 import { Button } from "@/components/ui/button";
@@ -10,6 +12,7 @@ import { Separator } from "@/components/ui/separator";
 import { TransferItemRow } from "@/components/TransferItemRow";
 import { LangSwitch } from "@/components/LangSwitch";
 import type { TransferItem } from "@/hooks/usePeerHost";
+import type { TransportMode } from "@/lib/webrtc";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -22,6 +25,9 @@ import {
   Monitor,
   Smartphone,
   ArrowLeftRight,
+  Zap,
+  Globe,
+  Loader2,
 } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
@@ -31,9 +37,39 @@ interface TransferPanelProps {
   onSendFile: (file: File) => void;
   onDisconnect: () => void;
   role: "host" | "client";
+  transportMode: TransportMode;
 }
 
-export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role }: TransferPanelProps) {
+function TransportBadge({ mode }: { mode: TransportMode }) {
+  const { t } = useI18n();
+
+  if (mode === "upgrading") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-amber-500/10 text-amber-600 border border-amber-500/20">
+        <Loader2 className="size-2.5 animate-spin" />
+        {t("upgrading")}
+      </span>
+    );
+  }
+
+  if (mode === "p2p") {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-emerald-500/10 text-emerald-600 border border-emerald-500/20">
+        <Zap className="size-2.5" />
+        P2P
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-blue-500/10 text-blue-600 border border-blue-500/20">
+      <Globe className="size-2.5" />
+      {t("relay")}
+    </span>
+  );
+}
+
+export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode }: TransferPanelProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
@@ -143,6 +179,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
           <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
             {t("connected")}
           </span>
+          <TransportBadge mode={transportMode} />
         </div>
         <div className="flex items-center gap-3">
           <LangSwitch />
