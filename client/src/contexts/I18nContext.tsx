@@ -83,8 +83,8 @@ const translations = {
     lookAtPC: "查看电脑屏幕上的4位数字代码",
 
     // 模式切换
-    switchToMobile: "切换到手机或另一台设备",
-    switchToPC: "切换到电脑模式",
+    switchToMobile: "切换为手机或另一台设备",
+    switchToPC: "切换为电脑模式",
 
     // 隐私 / 技术细节
     noFilesStored: "服务器不存储任何文件",

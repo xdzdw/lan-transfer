@@ -392,12 +392,13 @@ export default function Home() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.6 }}
-          className="mt-4 text-center"
+          className="mt-6 text-center"
         >
           <button
             onClick={handleSwitchMode}
-            className="text-[11px] font-mono text-muted-foreground/60 hover:text-muted-foreground transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border/60 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 hover:bg-accent/50 transition-all duration-200"
           >
+            <ArrowLeftRight className="size-3.5" />
             {mode === "host" ? t("switchToMobile") : t("switchToPC")}
           </button>
         </motion.div>

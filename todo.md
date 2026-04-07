@@ -53,3 +53,4 @@
 - [x] 客户端WebRTC传输层白盒测试：DataChannel消息收发
 - [x] 客户端WebRTC传输层白盒测试：P2P失败自动回退relay
 - [x] 客户端WebRTC传输层白盒测试：sendViaTransport优先级选择
+- [x] 将“切换到手机或另一台设备”改为“切换为手机或另一台设备”，并让按钮更醒目
