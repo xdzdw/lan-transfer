@@ -47,6 +47,14 @@ async function startServer() {
   // WebSocket signaling server for WebRTC peer connection
   setupSignalingServer(server);
 
+  // Serve debug-collector stub in development (prevents SyntaxError from SPA fallback)
+  if (process.env.NODE_ENV === "development") {
+    app.get("/__manus__/debug-collector.js", (_req, res) => {
+      res.set("Content-Type", "application/javascript");
+      res.send("// manus debug collector stub");
+    });
+  }
+
   // development mode uses Vite, production mode uses static files
   if (process.env.NODE_ENV === "development") {
     await setupVite(app, server);
