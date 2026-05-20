@@ -7,8 +7,13 @@
  * 3. If WebRTC succeeds → data flows P2P (fast, local network)
  * 4. If WebRTC fails → data flows through WebSocket relay (fallback)
  * 
+ * Reconnection support:
+ * - When a peer disconnects, room is preserved for 30 seconds
+ * - Peer can rejoin with same token and role to resume session
+ * - Other peer is notified of disconnect/reconnect events
+ * 
  * Message types:
- * - register/join/connected/peer-disconnected: room management
+ * - register/join/rejoin/connected/peer-disconnected/peer-reconnected: room management
  * - rtc-offer/rtc-answer/rtc-ice: WebRTC signaling (relayed to peer)
  * - text/file-meta/file-complete/binary: data transfer (relay fallback)
  * - ping/pong: keep-alive
@@ -22,21 +27,60 @@ interface Room {
   host: WebSocket | null;
   client: WebSocket | null;
   createdAt: number;
+  /** Set when a peer disconnects — room is kept alive for reconnection */
+  hostDisconnectedAt: number | null;
+  clientDisconnectedAt: number | null;
+  /** Track if both peers were previously connected (for reconnection logic) */
+  wasConnected: boolean;
 }
 
 const rooms = new Map<string, Room>();
 
-// Clean up stale rooms every 5 minutes
+// Grace period for reconnection (30 seconds)
+const RECONNECT_GRACE_MS = 30_000;
+
+// Clean up stale rooms every 30 seconds
 setInterval(() => {
   const now = Date.now();
   for (const [token, room] of Array.from(rooms.entries())) {
+    // Remove rooms older than 30 minutes
     if (now - room.createdAt > 30 * 60 * 1000) {
       if (room.host?.readyState === WebSocket.OPEN) room.host.close();
       if (room.client?.readyState === WebSocket.OPEN) room.client.close();
       rooms.delete(token);
+      continue;
+    }
+
+    // Remove rooms where both peers disconnected and grace period expired
+    const hostGone = !room.host && room.hostDisconnectedAt && (now - room.hostDisconnectedAt > RECONNECT_GRACE_MS);
+    const clientGone = !room.client && room.clientDisconnectedAt && (now - room.clientDisconnectedAt > RECONNECT_GRACE_MS);
+
+    if (hostGone && !room.client) {
+      rooms.delete(token);
+      continue;
+    }
+    if (clientGone && !room.host) {
+      rooms.delete(token);
+      continue;
+    }
+
+    // If host disconnected and grace period expired, notify client and clean up
+    if (hostGone && room.client?.readyState === WebSocket.OPEN) {
+      room.client.send(JSON.stringify({ type: "peer-disconnected", permanent: true }));
+      room.client.close();
+      rooms.delete(token);
+      continue;
+    }
+
+    // If client disconnected and grace period expired, just clear client slot
+    if (clientGone && room.host?.readyState === WebSocket.OPEN) {
+      room.clientDisconnectedAt = null;
+      room.wasConnected = false;
+      // Host goes back to waiting state
+      room.host.send(JSON.stringify({ type: "peer-disconnected", permanent: true }));
     }
   }
-}, 5 * 60 * 1000);
+}, 30_000);
 
 export function setupSignalingServer(server: Server) {
   const wss = new WebSocketServer({ noServer: true });
@@ -81,15 +125,42 @@ export function setupSignalingServer(server: Server) {
               return;
             }
 
-            // Clean up existing room with same token
+            // Clean up existing room with same token (only if not a reconnection)
             if (rooms.has(token)) {
               const existing = rooms.get(token)!;
+              // If the host slot is empty (disconnected) and this is a re-register, allow it
+              if (existing.hostDisconnectedAt && !existing.host) {
+                existing.host = ws;
+                existing.hostDisconnectedAt = null;
+                currentToken = token;
+                currentRole = "host";
+                console.log(`[Relay] Host reconnected token=${token}`);
+                ws.send(JSON.stringify({ type: "registered", token }));
+
+                // If client is still connected, notify both sides
+                if (existing.client?.readyState === WebSocket.OPEN) {
+                  existing.client.send(JSON.stringify({ type: "peer-reconnected", role: "host" }));
+                  ws.send(JSON.stringify({ type: "connected", reconnected: true }));
+                  existing.wasConnected = true;
+                }
+                return;
+              }
+
+              // Otherwise, close existing room
               if (existing.host?.readyState === WebSocket.OPEN) existing.host.close();
               if (existing.client?.readyState === WebSocket.OPEN) existing.client.close();
               rooms.delete(token);
             }
 
-            rooms.set(token, { token, host: ws, client: null, createdAt: Date.now() });
+            rooms.set(token, {
+              token,
+              host: ws,
+              client: null,
+              createdAt: Date.now(),
+              hostDisconnectedAt: null,
+              clientDisconnectedAt: null,
+              wasConnected: false,
+            });
             currentToken = token;
             currentRole = "host";
             console.log(`[Relay] Host registered token=${token}, total rooms=${rooms.size}`);
@@ -113,12 +184,66 @@ export function setupSignalingServer(server: Server) {
             }
 
             room.client = ws;
+            room.clientDisconnectedAt = null;
             currentToken = token;
             currentRole = "client";
+            room.wasConnected = true;
 
             // Notify both sides that connection is established
             room.host.send(JSON.stringify({ type: "connected" }));
             ws.send(JSON.stringify({ type: "connected" }));
+            break;
+          }
+
+          case "rejoin": {
+            // Client reconnection — rejoin existing room with same token
+            const token = msg.token;
+            const role = msg.role as "host" | "client";
+            const room = rooms.get(token);
+            console.log(`[Relay] Rejoin request token=${token}, role=${role}, room exists=${!!room}`);
+
+            if (!room) {
+              ws.send(JSON.stringify({ type: "error", message: "Room expired. Please reconnect." }));
+              return;
+            }
+
+            if (role === "client") {
+              if (room.client && room.client.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: "Room is already full" }));
+                return;
+              }
+
+              room.client = ws;
+              room.clientDisconnectedAt = null;
+              currentToken = token;
+              currentRole = "client";
+
+              ws.send(JSON.stringify({ type: "rejoined", token }));
+
+              // Notify host that client reconnected
+              if (room.host?.readyState === WebSocket.OPEN) {
+                room.host.send(JSON.stringify({ type: "peer-reconnected", role: "client" }));
+                ws.send(JSON.stringify({ type: "connected", reconnected: true }));
+              }
+            } else if (role === "host") {
+              if (room.host && room.host.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "error", message: "Host slot is occupied" }));
+                return;
+              }
+
+              room.host = ws;
+              room.hostDisconnectedAt = null;
+              currentToken = token;
+              currentRole = "host";
+
+              ws.send(JSON.stringify({ type: "rejoined", token }));
+
+              // Notify client that host reconnected
+              if (room.client?.readyState === WebSocket.OPEN) {
+                room.client.send(JSON.stringify({ type: "peer-reconnected", role: "host" }));
+                ws.send(JSON.stringify({ type: "connected", reconnected: true }));
+              }
+            }
             break;
           }
 
@@ -170,16 +295,26 @@ export function setupSignalingServer(server: Server) {
         const room = rooms.get(currentToken);
         if (room) {
           if (currentRole === "host") {
-            if (room.client?.readyState === WebSocket.OPEN) {
-              room.client.send(JSON.stringify({ type: "peer-disconnected" }));
-              room.client.close();
+            room.host = null;
+            room.hostDisconnectedAt = Date.now();
+
+            // Notify client that host temporarily disconnected (not permanent yet)
+            if (room.client?.readyState === WebSocket.OPEN && room.wasConnected) {
+              room.client.send(JSON.stringify({ type: "peer-disconnected", permanent: false }));
             }
-            rooms.delete(currentToken);
+
+            // If room was never connected (no client ever joined), delete immediately
+            if (!room.wasConnected && !room.client) {
+              rooms.delete(currentToken);
+            }
           } else if (currentRole === "client") {
-            if (room.host?.readyState === WebSocket.OPEN) {
-              room.host.send(JSON.stringify({ type: "peer-disconnected" }));
-            }
             room.client = null;
+            room.clientDisconnectedAt = Date.now();
+
+            // Notify host that client temporarily disconnected
+            if (room.host?.readyState === WebSocket.OPEN) {
+              room.host.send(JSON.stringify({ type: "peer-disconnected", permanent: false }));
+            }
           }
         }
       }

@@ -7,6 +7,11 @@
  * 3. If WebRTC succeeds → data flows P2P (fast LAN direct transfer)
  * 4. If WebRTC fails/times out → automatic fallback to WebSocket relay
  * 
+ * Reconnection:
+ * - On WebSocket close, auto-reconnect with exponential backoff
+ * - Sends "register" with same token to re-register the room
+ * - Pending file sends are resumed from the last sent chunk
+ * 
  * File transfer protocol (same for both P2P and relay):
  * 1. Sender sends file-meta JSON with { id, name, size, mimeType, totalChunks }
  * 2. Sender sends binary chunks: [36-byte UUID][4-byte chunk index (big-endian)][chunk data]
@@ -52,6 +57,15 @@ interface FileReceiveState {
   pendingComplete: boolean;
 }
 
+/** Tracks a file send in progress for resume after reconnect */
+interface FileSendState {
+  id: string;
+  file: File;
+  totalChunks: number;
+  lastSentChunk: number;
+  completed: boolean;
+}
+
 const CHUNK_SIZE = 64 * 1024; // 64KB
 const HEADER_SIZE = 40; // 36-byte UUID + 4-byte chunk index
 
@@ -62,7 +76,7 @@ function getWsUrl(): string {
 
 export function usePeerHost() {
   const [token, setToken] = useState<string>("");
-  const [status, setStatus] = useState<"idle" | "waiting" | "connected" | "error">("idle");
+  const [status, setStatus] = useState<"idle" | "waiting" | "connected" | "reconnecting" | "error">("idle");
   const [items, setItems] = useState<TransferItem[]>([]);
   const [error, setError] = useState<string>("");
   const [transportMode, setTransportMode] = useState<TransportMode>("relay");
@@ -72,6 +86,18 @@ export function usePeerHost() {
   const fileChunksRef = useRef<Map<string, FileReceiveState>>(new Map());
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const binaryQueueRef = useRef<Promise<void>>(Promise.resolve());
+
+  // Reconnection state
+  const tokenRef = useRef<string>("");
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptRef = useRef<number>(0);
+  const intentionalCloseRef = useRef<boolean>(false);
+  const wasStartedRef = useRef<boolean>(false);
+  const previousStatusRef = useRef<"waiting" | "connected" | null>(null);
+
+  // File send tracking for resume
+  const pendingSendsRef = useRef<Map<string, FileSendState>>(new Map());
+  const activeSendAbortRef = useRef<AbortController | null>(null);
 
   const addItem = useCallback((item: TransferItem) => {
     setItems(prev => [item, ...prev]);
@@ -139,7 +165,6 @@ export function usePeerHost() {
     try {
       // Binary data — file chunk
       if (event.data instanceof ArrayBuffer) {
-        // DataChannel delivers ArrayBuffer directly
         binaryQueueRef.current = binaryQueueRef.current.then(() => {
           processBinaryChunk(event.data as ArrayBuffer);
         });
@@ -147,7 +172,6 @@ export function usePeerHost() {
       }
 
       if (event.data instanceof Blob) {
-        // WebSocket delivers Blob
         binaryQueueRef.current = binaryQueueRef.current.then(() =>
           event.data.arrayBuffer().then((buffer: ArrayBuffer) => {
             processBinaryChunk(buffer);
@@ -174,22 +198,25 @@ export function usePeerHost() {
 
         case "file-meta": {
           const meta: FileChunkMeta = msg.meta;
-          fileChunksRef.current.set(meta.id, {
-            meta,
-            chunks: new Map(),
-            received: 0,
-            pendingComplete: false,
-          });
-          addItem({
-            id: meta.id,
-            type: "file",
-            direction: "received",
-            name: meta.name,
-            size: meta.size,
-            progress: 0,
-            timestamp: Date.now(),
-            status: "transferring",
-          });
+          // If we already have this file (resume scenario), don't re-add item
+          if (!fileChunksRef.current.has(meta.id)) {
+            fileChunksRef.current.set(meta.id, {
+              meta,
+              chunks: new Map(),
+              received: 0,
+              pendingComplete: false,
+            });
+            addItem({
+              id: meta.id,
+              type: "file",
+              direction: "received",
+              name: meta.name,
+              size: meta.size,
+              progress: 0,
+              timestamp: Date.now(),
+              status: "transferring",
+            });
+          }
           break;
         }
 
@@ -239,6 +266,83 @@ export function usePeerHost() {
     rtcRef.current = transport;
   }, [handleDataMessage]);
 
+  /** Resume pending file sends after reconnection */
+  const resumePendingSends = useCallback(() => {
+    for (const [_id, sendState] of Array.from(pendingSendsRef.current.entries())) {
+      if (sendState.completed) continue;
+      console.log(`[Host] Resuming file send ${sendState.file.name} from chunk ${sendState.lastSentChunk + 1}/${sendState.totalChunks}`);
+      resumeFileSend(sendState);
+    }
+  }, []);
+
+  const resumeFileSend = useCallback(async (sendState: FileSendState) => {
+    const ws = wsRef.current;
+    const { id, file, totalChunks, lastSentChunk } = sendState;
+    const startChunk = lastSentChunk + 1;
+
+    if (startChunk >= totalChunks) {
+      const completeStr = JSON.stringify({ type: "file-complete", id });
+      sendViaTransport(rtcRef.current, ws, completeStr);
+      updateItem(id, { progress: 100, status: "done" });
+      sendState.completed = true;
+      pendingSendsRef.current.delete(id);
+      return;
+    }
+
+    // Re-send file-meta so receiver knows what's coming
+    const metaStr = JSON.stringify({
+      type: "file-meta",
+      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
+    });
+    sendViaTransport(rtcRef.current, ws, metaStr);
+
+    const buffer = await file.arrayBuffer();
+    const abortController = new AbortController();
+    activeSendAbortRef.current = abortController;
+
+    for (let i = startChunk; i < totalChunks; i++) {
+      if (abortController.signal.aborted) {
+        console.log(`[Host] File send aborted at chunk ${i}`);
+        return;
+      }
+
+      const start = i * CHUNK_SIZE;
+      const end = Math.min(start + CHUNK_SIZE, file.size);
+      const chunk = buffer.slice(start, end);
+
+      const idBytes = new TextEncoder().encode(id);
+      const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
+      const view = new Uint8Array(combined);
+      view.set(idBytes, 0);
+      const indexView = new DataView(combined, 36, 4);
+      indexView.setUint32(0, i, false);
+      view.set(new Uint8Array(chunk), HEADER_SIZE);
+
+      let waitCount = 0;
+      while (getTransportBufferedAmount(rtcRef.current, ws) > 1024 * 1024) {
+        await new Promise(resolve => setTimeout(resolve, 50));
+        waitCount++;
+        if (waitCount > 200 || abortController.signal.aborted) {
+          if (abortController.signal.aborted) return;
+          break;
+        }
+      }
+
+      sendViaTransport(rtcRef.current, ws, combined);
+      sendState.lastSentChunk = i;
+
+      const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
+      updateItem(id, { progress, status: "transferring" });
+    }
+
+    const completeStr = JSON.stringify({ type: "file-complete", id });
+    sendViaTransport(rtcRef.current, ws, completeStr);
+    updateItem(id, { progress: 100, status: "done" });
+    sendState.completed = true;
+    pendingSendsRef.current.delete(id);
+    activeSendAbortRef.current = null;
+  }, [updateItem]);
+
   const handleWsMessage = useCallback((event: MessageEvent) => {
     try {
       // Binary data — file chunk via relay
@@ -252,14 +356,29 @@ export function usePeerHost() {
       switch (msg.type) {
         case "registered":
           console.log("[Host] Registered with token:", msg.token);
+          reconnectAttemptRef.current = 0;
+          // Restore previous status after reconnection
+          if (previousStatusRef.current === "connected") {
+            // We were connected before, wait for client to reconnect
+            setStatus("waiting");
+          } else {
+            setStatus("waiting");
+          }
+          setError("");
           break;
 
         case "connected":
           setStatus("connected");
           setError("");
+          previousStatusRef.current = "connected";
           // Start WebRTC upgrade attempt
           if (wsRef.current) {
             initiateWebRTC(wsRef.current);
+          }
+          // If this is a reconnection, resume pending sends
+          if (msg.reconnected) {
+            console.log("[Host] Reconnected to session, resuming...");
+            resumePendingSends();
           }
           break;
 
@@ -277,13 +396,30 @@ export function usePeerHost() {
           break;
 
         case "peer-disconnected":
-          setStatus("waiting");
+          if (msg.permanent) {
+            setStatus("waiting");
+            previousStatusRef.current = "waiting";
+          } else {
+            // Client temporarily disconnected, keep status but note it
+            console.log("[Host] Client temporarily disconnected, waiting for reconnection...");
+          }
           setTransportMode("relay");
-          // Clean up WebRTC
           if (rtcRef.current) {
             rtcRef.current.close();
             rtcRef.current = null;
           }
+          break;
+
+        case "peer-reconnected":
+          console.log("[Host] Client reconnected!");
+          setStatus("connected");
+          setError("");
+          // Re-initiate WebRTC
+          if (wsRef.current) {
+            initiateWebRTC(wsRef.current);
+          }
+          // Resume pending sends
+          resumePendingSends();
           break;
 
         case "error":
@@ -296,17 +432,74 @@ export function usePeerHost() {
     } catch (err) {
       console.error("[Host] Error handling message:", err);
     }
-  }, [handleDataMessage, initiateWebRTC]);
+  }, [handleDataMessage, initiateWebRTC, resumePendingSends]);
+
+  /** Attempt to reconnect WebSocket */
+  const attemptReconnect = useCallback(() => {
+    if (intentionalCloseRef.current) return;
+    if (!tokenRef.current) return;
+
+    const attempt = reconnectAttemptRef.current;
+    const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
+    console.log(`[Host] Reconnecting in ${delay}ms (attempt ${attempt + 1})...`);
+
+    setStatus("reconnecting");
+
+    reconnectTimerRef.current = setTimeout(() => {
+      reconnectAttemptRef.current = attempt + 1;
+
+      try {
+        const ws = new WebSocket(getWsUrl());
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log("[Host] WebSocket reconnected, re-registering room...");
+          // Re-register with same token
+          ws.send(JSON.stringify({ type: "register", token: tokenRef.current }));
+          pingRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: "ping" }));
+            }
+          }, 25000);
+        };
+
+        ws.onmessage = handleWsMessage;
+
+        ws.onclose = () => {
+          if (pingRef.current) clearInterval(pingRef.current);
+          console.log("[Host] WebSocket closed during reconnection");
+          if (!intentionalCloseRef.current && wasStartedRef.current) {
+            attemptReconnect();
+          }
+        };
+
+        ws.onerror = () => {
+          console.log("[Host] WebSocket error during reconnection");
+        };
+      } catch (err) {
+        console.error("[Host] Reconnection attempt failed:", err);
+        if (!intentionalCloseRef.current) {
+          attemptReconnect();
+        }
+      }
+    }, delay);
+  }, [handleWsMessage]);
 
   const startHost = useCallback(() => {
     try {
       const t = String(Math.floor(1000 + Math.random() * 9000));
       setToken(t);
+      tokenRef.current = t;
       setStatus("waiting");
       setError("");
       setItems([]);
       setTransportMode("relay");
       fileChunksRef.current.clear();
+      pendingSendsRef.current.clear();
+      intentionalCloseRef.current = false;
+      wasStartedRef.current = true;
+      previousStatusRef.current = "waiting";
+      reconnectAttemptRef.current = 0;
 
       const ws = new WebSocket(getWsUrl());
       wsRef.current = ws;
@@ -325,18 +518,29 @@ export function usePeerHost() {
       ws.onclose = () => {
         if (pingRef.current) clearInterval(pingRef.current);
         console.log("[Host] WebSocket closed");
+
+        // Auto-reconnect if we didn't intentionally close
+        if (!intentionalCloseRef.current && wasStartedRef.current) {
+          if (activeSendAbortRef.current) {
+            activeSendAbortRef.current.abort();
+            activeSendAbortRef.current = null;
+          }
+          attemptReconnect();
+        }
       };
 
       ws.onerror = () => {
-        setError("Connection to server failed");
-        setStatus("error");
+        if (!wasStartedRef.current || intentionalCloseRef.current) {
+          setError("Connection to server failed");
+          setStatus("error");
+        }
       };
     } catch (err) {
       setError("Failed to start");
       setStatus("error");
       console.error(err);
     }
-  }, [handleWsMessage]);
+  }, [handleWsMessage, attemptReconnect]);
 
   const sendText = useCallback((text: string) => {
     const ws = wsRef.current;
@@ -361,6 +565,16 @@ export function usePeerHost() {
     const id = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
 
+    // Track this send for potential resume
+    const sendState: FileSendState = {
+      id,
+      file,
+      totalChunks,
+      lastSentChunk: -1,
+      completed: false,
+    };
+    pendingSendsRef.current.set(id, sendState);
+
     addItem({
       id,
       type: "file",
@@ -381,8 +595,15 @@ export function usePeerHost() {
 
     // Send file chunks
     const buffer = await file.arrayBuffer();
+    const abortController = new AbortController();
+    activeSendAbortRef.current = abortController;
 
     for (let i = 0; i < totalChunks; i++) {
+      if (abortController.signal.aborted) {
+        console.log(`[Host] File send paused at chunk ${i}, will resume after reconnect`);
+        return;
+      }
+
       const start = i * CHUNK_SIZE;
       const end = Math.min(start + CHUNK_SIZE, file.size);
       const chunk = buffer.slice(start, end);
@@ -396,11 +617,18 @@ export function usePeerHost() {
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
       // Back-pressure
+      let waitCount = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > 1024 * 1024) {
         await new Promise(resolve => setTimeout(resolve, 50));
+        waitCount++;
+        if (waitCount > 200 || abortController.signal.aborted) {
+          if (abortController.signal.aborted) return;
+          break;
+        }
       }
 
       sendViaTransport(rtcRef.current, ws, combined);
+      sendState.lastSentChunk = i;
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
@@ -410,9 +638,21 @@ export function usePeerHost() {
     const completeStr = JSON.stringify({ type: "file-complete", id });
     sendViaTransport(rtcRef.current, ws, completeStr);
     updateItem(id, { progress: 100, status: "done" });
+    sendState.completed = true;
+    pendingSendsRef.current.delete(id);
+    activeSendAbortRef.current = null;
   }, [addItem, updateItem]);
 
   const disconnect = useCallback(() => {
+    intentionalCloseRef.current = true;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    if (activeSendAbortRef.current) {
+      activeSendAbortRef.current.abort();
+      activeSendAbortRef.current = null;
+    }
     if (pingRef.current) clearInterval(pingRef.current);
     if (rtcRef.current) {
       rtcRef.current.close();
@@ -425,6 +665,11 @@ export function usePeerHost() {
     setItems([]);
     setTransportMode("relay");
     fileChunksRef.current.clear();
+    pendingSendsRef.current.clear();
+    tokenRef.current = "";
+    wasStartedRef.current = false;
+    previousStatusRef.current = null;
+    reconnectAttemptRef.current = 0;
   }, []);
 
   return { token, status, items, error, transportMode, startHost, sendText, sendFile, disconnect };

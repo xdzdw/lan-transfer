@@ -299,4 +299,181 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     expect(msg.type).toBe("error");
     expect(msg.message).toBe("Room is already full");
   });
+
+  // ===== Reconnection Tests =====
+
+  it("should notify host with permanent=false when client disconnects", async () => {
+    const { host, client } = await setupRoom("3001");
+    clients.push(host);
+
+    const hostMsgPromise = waitForMessage(host);
+    client.close();
+    const msg = await hostMsgPromise;
+
+    expect(msg.type).toBe("peer-disconnected");
+    expect(msg.permanent).toBe(false);
+  });
+
+  it("should allow client to rejoin after disconnect", async () => {
+    const host = await createWsClient();
+    const client1 = await createWsClient();
+    clients.push(host);
+
+    // Register host
+    host.send(JSON.stringify({ type: "register", token: "3002" }));
+    await waitForMessage(host); // registered
+
+    // Join client
+    client1.send(JSON.stringify({ type: "join", token: "3002" }));
+    await waitForMessage(host); // connected
+    await waitForMessage(client1); // connected
+
+    // Client disconnects
+    client1.close();
+    await waitForMessage(host); // peer-disconnected
+
+    // Small delay to ensure server processes the close
+    await new Promise(r => setTimeout(r, 50));
+
+    // Collect all messages from host in background
+    const hostMessages: any[] = [];
+    const hostMsgHandler = (data: any) => { hostMessages.push(JSON.parse(data.toString())); };
+    host.on("message", hostMsgHandler);
+
+    // Client reconnects via rejoin
+    const client2 = await createWsClient();
+    clients.push(client2);
+
+    const client2Messages: any[] = [];
+    const client2MsgHandler = (data: any) => { client2Messages.push(JSON.parse(data.toString())); };
+    client2.on("message", client2MsgHandler);
+
+    client2.send(JSON.stringify({ type: "rejoin", token: "3002", role: "client" }));
+
+    // Wait for messages to arrive
+    await new Promise(r => setTimeout(r, 200));
+
+    host.off("message", hostMsgHandler);
+    client2.off("message", client2MsgHandler);
+
+    // Verify client2 received rejoined + connected
+    expect(client2Messages.some(m => m.type === "rejoined")).toBe(true);
+    expect(client2Messages.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+
+    // Verify host received peer-reconnected
+    expect(hostMessages.some(m => m.type === "peer-reconnected" && m.role === "client")).toBe(true);
+  });
+
+  it("should allow host to re-register after disconnect", async () => {
+    const host1 = await createWsClient();
+    const client = await createWsClient();
+    clients.push(client);
+
+    // Register host
+    host1.send(JSON.stringify({ type: "register", token: "3003" }));
+    await waitForMessage(host1); // registered
+
+    // Join client
+    client.send(JSON.stringify({ type: "join", token: "3003" }));
+    await waitForMessage(host1); // connected
+    await waitForMessage(client); // connected
+
+    // Host disconnects
+    host1.close();
+    await waitForMessage(client); // peer-disconnected
+
+    // Small delay
+    await new Promise(r => setTimeout(r, 50));
+
+    // Collect messages
+    const clientMessages: any[] = [];
+    const clientMsgHandler = (data: any) => { clientMessages.push(JSON.parse(data.toString())); };
+    client.on("message", clientMsgHandler);
+
+    // Host reconnects via register with same token
+    const host2 = await createWsClient();
+    clients.push(host2);
+
+    const host2Messages: any[] = [];
+    const host2MsgHandler = (data: any) => { host2Messages.push(JSON.parse(data.toString())); };
+    host2.on("message", host2MsgHandler);
+
+    host2.send(JSON.stringify({ type: "register", token: "3003" }));
+
+    // Wait for messages
+    await new Promise(r => setTimeout(r, 200));
+
+    client.off("message", clientMsgHandler);
+    host2.off("message", host2MsgHandler);
+
+    // Verify host2 received registered + connected
+    expect(host2Messages.some(m => m.type === "registered")).toBe(true);
+    expect(host2Messages.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+
+    // Verify client received peer-reconnected
+    expect(clientMessages.some(m => m.type === "peer-reconnected" && m.role === "host")).toBe(true);
+  });
+
+  it("should relay messages after client rejoin", async () => {
+    const host = await createWsClient();
+    const client1 = await createWsClient();
+    clients.push(host);
+
+    // Register host
+    host.send(JSON.stringify({ type: "register", token: "3004" }));
+    await waitForMessage(host); // registered
+
+    // Join client
+    client1.send(JSON.stringify({ type: "join", token: "3004" }));
+    await waitForMessage(host); // connected
+    await waitForMessage(client1); // connected
+
+    // Client disconnects
+    client1.close();
+    await waitForMessage(host); // peer-disconnected
+
+    await new Promise(r => setTimeout(r, 50));
+
+    // Drain host messages during rejoin
+    const drainHost: any[] = [];
+    const drainHandler = (data: any) => { drainHost.push(JSON.parse(data.toString())); };
+    host.on("message", drainHandler);
+
+    // Client reconnects
+    const client2 = await createWsClient();
+    clients.push(client2);
+
+    const client2Msgs: any[] = [];
+    const c2Handler = (data: any) => { client2Msgs.push(JSON.parse(data.toString())); };
+    client2.on("message", c2Handler);
+
+    client2.send(JSON.stringify({ type: "rejoin", token: "3004", role: "client" }));
+
+    // Wait for rejoin to complete
+    await new Promise(r => setTimeout(r, 200));
+
+    host.off("message", drainHandler);
+    client2.off("message", c2Handler);
+
+    // Verify rejoin succeeded
+    expect(client2Msgs.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+
+    // Now verify relay still works
+    const relayPromise = waitForMessage(client2);
+    host.send(JSON.stringify({ type: "text", content: "after-reconnect" }));
+    const msg = await relayPromise;
+    expect(msg.type).toBe("text");
+    expect(msg.content).toBe("after-reconnect");
+  });
+
+  it("should return error when rejoin to non-existent room", async () => {
+    const ws = await createWsClient();
+    clients.push(ws);
+
+    const msgPromise = waitForMessage(ws);
+    ws.send(JSON.stringify({ type: "rejoin", token: "9998", role: "client" }));
+    const msg = await msgPromise;
+    expect(msg.type).toBe("error");
+    expect(msg.message).toContain("expired");
+  });
 });

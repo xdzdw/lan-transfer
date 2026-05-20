@@ -160,10 +160,10 @@ export default function Home() {
     }
   };
 
-  // Connected state — show transfer panel
+  // Connected or reconnecting state — show transfer panel
   if (
-    (mode === "host" && host.status === "connected") ||
-    (mode === "client" && client.status === "connected")
+    (mode === "host" && (host.status === "connected" || host.status === "reconnecting")) ||
+    (mode === "client" && (client.status === "connected" || client.status === "reconnecting"))
   ) {
     return (
       <div className="h-screen h-[100dvh] flex flex-col bg-background">
@@ -183,6 +183,7 @@ export default function Home() {
             }}
             role={mode === "host" ? "host" : "client"}
             transportMode={mode === "host" ? host.transportMode : client.transportMode}
+            isReconnecting={mode === "host" ? host.status === "reconnecting" : client.status === "reconnecting"}
           />
         </div>
       </div>
@@ -227,7 +228,7 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {host.status === "waiting" ? t("waitingForConnection") : t("initializing")}
+                {host.status === "waiting" ? t("waitingForConnection") : host.status === "reconnecting" ? t("reconnecting") : t("initializing")}
               </p>
 
               {/* Token display */}
@@ -302,7 +303,7 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {client.status === "connecting" ? t("connecting") : t("enterCodeFromPC")}
+                {client.status === "connecting" ? t("connecting") : client.status === "reconnecting" ? t("reconnecting") : t("enterCodeFromPC")}
               </p>
 
               {/* Token input */}

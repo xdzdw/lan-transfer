@@ -38,6 +38,7 @@ interface TransferPanelProps {
   onDisconnect: () => void;
   role: "host" | "client";
   transportMode: TransportMode;
+  isReconnecting?: boolean;
 }
 
 function TransportBadge({ mode }: { mode: TransportMode }) {
@@ -69,7 +70,7 @@ function TransportBadge({ mode }: { mode: TransportMode }) {
   );
 }
 
-export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode }: TransferPanelProps) {
+export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode, isReconnecting }: TransferPanelProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
@@ -164,12 +165,26 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
         )}
       </AnimatePresence>
 
+      {/* Reconnecting banner */}
+      {isReconnecting && (
+        <div className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 shrink-0">
+          <Loader2 className="size-3 animate-spin text-amber-600" />
+          <span className="text-[11px] font-mono text-amber-700">{t("reconnectingHint")}</span>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 shrink-0">
         <div className="flex items-center gap-3">
           <span className="relative flex size-2">
-            <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400/40" />
-            <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+            {isReconnecting ? (
+              <span className="relative inline-flex size-2 rounded-full bg-amber-500 animate-pulse" />
+            ) : (
+              <>
+                <span className="absolute inline-flex size-full animate-ping rounded-full bg-emerald-400/40" />
+                <span className="relative inline-flex size-2 rounded-full bg-emerald-500" />
+              </>
+            )}
           </span>
           <div className="flex items-center gap-1.5 text-muted-foreground">
             {role === "host" ? <Monitor className="size-3.5" /> : <Smartphone className="size-3.5" />}

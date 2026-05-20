@@ -34,6 +34,10 @@ const translations = {
     techTTL: "Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.",
     techFooter: "Protocol: WSS + WebRTC · Chunk size: 64KB · No logs · No analytics on content",
 
+    // Reconnection
+    reconnecting: "Reconnecting...",
+    reconnectingHint: "Connection lost. Reconnecting automatically...",
+
     // Transport mode
     upgrading: "Upgrading",
     relay: "Relay",
@@ -92,6 +96,10 @@ const translations = {
     techMEM: "文件仅通过服务器内存流转。零磁盘写入，零数据库存储。数据仅在传输中存在，不会持久保存。",
     techTTL: "会话是临时的。断开连接后房间即销毁。闲置房间30分钟后自动清除。",
     techFooter: "协议: WSS + WebRTC · 分块大小: 64KB · 无日志 · 不分析传输内容",
+
+    // 重连
+    reconnecting: "重连中...",
+    reconnectingHint: "连接断开，正在自动重连...",
 
     // 传输模式
     upgrading: "升级中",
