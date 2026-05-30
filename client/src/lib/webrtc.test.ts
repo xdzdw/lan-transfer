@@ -230,8 +230,8 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
 
       expect(onFail).not.toHaveBeenCalled();
 
-      // Advance past the 8s timeout (RTC_TIMEOUT_MS = 8000)
-      await vi.advanceTimersByTimeAsync(8000);
+      // Advance past the 15s timeout (RTC_TIMEOUT_MS = 15000)
+      await vi.advanceTimersByTimeAsync(15000);
 
       expect(onFail).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");
@@ -382,8 +382,8 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(onFail).not.toHaveBeenCalled();
 
-      // Advance past the 8s timeout (RTC_TIMEOUT_MS = 8000)
-      await vi.advanceTimersByTimeAsync(8000);
+      // Advance past the 15s timeout (RTC_TIMEOUT_MS = 15000)
+      await vi.advanceTimersByTimeAsync(15000);
       expect(onFail).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");
 
@@ -446,10 +446,29 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
       const transport = createHostRTC(mockWs, vi.fn(), vi.fn(), vi.fn(), vi.fn());
       await vi.advanceTimersByTimeAsync(50);
 
+      // Must set remoteDescriptionSet=true first (simulates answer received)
+      transport.remoteDescriptionSet = true;
+
       const candidate = { candidate: "mock-ice", sdpMid: "0", sdpMLineIndex: 0 };
       handleRTCSignaling(transport, { type: "rtc-ice", candidate });
 
       expect(latestPC.addIceCandidate).toHaveBeenCalled();
+
+      transport.close();
+    });
+
+    it("should buffer ICE candidates when remote description is not set", async () => {
+      const transport = createHostRTC(mockWs, vi.fn(), vi.fn(), vi.fn(), vi.fn());
+      await vi.advanceTimersByTimeAsync(50);
+
+      // remoteDescriptionSet is false by default
+      const candidate = { candidate: "mock-ice", sdpMid: "0", sdpMLineIndex: 0 };
+      handleRTCSignaling(transport, { type: "rtc-ice", candidate });
+
+      // Should NOT call addIceCandidate yet
+      expect(latestPC.addIceCandidate).not.toHaveBeenCalled();
+      // Should be buffered
+      expect(transport.pendingCandidates).toHaveLength(1);
 
       transport.close();
     });

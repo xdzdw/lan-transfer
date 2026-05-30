@@ -9,7 +9,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Copy, Check, Bug, X, ChevronDown } from "lucide-react";
 
 // Build version identifier — change this on each deploy to confirm code update
-const BUILD_VERSION = "v2.4.0";
+const BUILD_VERSION = "v2.5.0";
 
 export interface DebugLog {
   time: string;

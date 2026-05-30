@@ -2,9 +2,9 @@
  * WebRTC DataChannel transport layer for Quick Transfer
  * 
  * This module handles:
- * 1. Creating RTCPeerConnection with STUN servers
+ * 1. Creating RTCPeerConnection with STUN servers (China-accessible)
  * 2. SDP offer/answer exchange via WebSocket signaling
- * 3. ICE candidate exchange via WebSocket signaling
+ * 3. ICE candidate exchange via WebSocket signaling (with buffering)
  * 4. DataChannel creation and management
  * 5. Connection state monitoring with stability (no premature fallback)
  * 
@@ -13,17 +13,22 @@
  * - Only "failed" triggers immediate fallback
  * - Once P2P is established, we don't flip back to relay on transient issues
  * - sendViaTransport locks to a channel for the duration of a transfer
+ * - ICE candidates are buffered until remote description is set
  */
 
 import { pushDebugLog } from "@/components/DebugPanel";
 
-// Public STUN servers for NAT traversal
+// STUN servers — China-accessible + international fallbacks
 const ICE_SERVERS: RTCIceServer[] = [
+  // China-accessible STUN servers (prioritized)
+  { urls: "stun:stun.miwifi.com:3478" },
+  { urls: "stun:stun.qq.com:3478" },
+  // International fallbacks (may not work in China but help elsewhere)
   { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
-const RTC_TIMEOUT_MS = 8000; // 8 seconds to establish WebRTC (increased from 6)
+const RTC_TIMEOUT_MS = 15000; // 15 seconds to establish WebRTC (increased for slow STUN)
 const DISCONNECT_GRACE_MS = 10000; // 10 seconds grace period for "disconnected" state
 
 export type TransportMode = "p2p" | "relay" | "upgrading";
@@ -39,6 +44,10 @@ export interface WebRTCTransport {
   wasP2P: boolean;
   /** Close and clean up */
   close: () => void;
+  /** Whether remote description has been set (for ICE candidate buffering) */
+  remoteDescriptionSet?: boolean;
+  /** Buffered ICE candidates received before remote description was set */
+  pendingCandidates?: RTCIceCandidateInit[];
 }
 
 /**
@@ -58,7 +67,11 @@ export function createHostRTC(
   onFail: () => void,
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {} };
+  let transport: WebRTCTransport = {
+    pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
+    remoteDescriptionSet: false,
+    pendingCandidates: [],
+  };
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout>;
   let disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -121,8 +134,14 @@ export function createHostRTC(
     }
   };
 
+  // Log ICE gathering state changes
+  pc.onicegatheringstatechange = () => {
+    pushDebugLog(`[ICE] Host gathering: ${pc.iceGatheringState}`);
+  };
+
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
+    pushDebugLog(`[ICE] Host connection: ${state}`);
     console.log("[WebRTC Host] Connection state:", state);
 
     if (state === "connected") {
@@ -168,6 +187,7 @@ export function createHostRTC(
         settled = true;
         clearTimeout(timeoutId);
         transport.mode = "relay";
+        pushDebugLog(`[P2P] WebRTC FAILED — ICE could not establish connection`);
         onFail();
       } else if (transport.mode === "p2p") {
         transport.mode = "relay";
@@ -203,6 +223,7 @@ export function createHostRTC(
     if (!settled) {
       settled = true;
       console.log("[WebRTC Host] Timeout — falling back to relay");
+      pushDebugLog(`[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`);
       transport.mode = "relay";
       onFail();
     }
@@ -241,7 +262,11 @@ export function createClientRTC(
   onFail: () => void,
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {} };
+  let transport: WebRTCTransport = {
+    pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
+    remoteDescriptionSet: false,
+    pendingCandidates: [],
+  };
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout>;
   let disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
@@ -303,8 +328,14 @@ export function createClientRTC(
     }
   };
 
+  // Log ICE gathering state changes
+  pc.onicegatheringstatechange = () => {
+    pushDebugLog(`[ICE] Client gathering: ${pc.iceGatheringState}`);
+  };
+
   pc.onconnectionstatechange = () => {
     const state = pc.connectionState;
+    pushDebugLog(`[ICE] Client connection: ${state}`);
     console.log("[WebRTC Client] Connection state:", state);
 
     if (state === "connected") {
@@ -340,6 +371,7 @@ export function createClientRTC(
         settled = true;
         clearTimeout(timeoutId);
         transport.mode = "relay";
+        pushDebugLog(`[P2P] WebRTC FAILED — ICE could not establish connection`);
         onFail();
       } else if (transport.mode === "p2p") {
         transport.mode = "relay";
@@ -350,7 +382,19 @@ export function createClientRTC(
 
   // Set remote offer and create answer
   pc.setRemoteDescription(new RTCSessionDescription(offer))
-    .then(() => pc.createAnswer())
+    .then(() => {
+      transport.remoteDescriptionSet = true;
+      // Flush any buffered ICE candidates
+      if (transport.pendingCandidates && transport.pendingCandidates.length > 0) {
+        pushDebugLog(`[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates`);
+        for (const candidate of transport.pendingCandidates) {
+          pc.addIceCandidate(new RTCIceCandidate(candidate))
+            .catch((err) => console.error("[WebRTC] Failed to add buffered ICE candidate:", err));
+        }
+        transport.pendingCandidates = [];
+      }
+      return pc.createAnswer();
+    })
     .then((answer) => pc.setLocalDescription(answer))
     .then(() => {
       if (ws.readyState === WebSocket.OPEN) {
@@ -363,6 +407,7 @@ export function createClientRTC(
     })
     .catch((err) => {
       console.error("[WebRTC Client] Failed to create answer:", err);
+      pushDebugLog(`[P2P] Client answer creation failed: ${err.message}`);
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
@@ -376,6 +421,7 @@ export function createClientRTC(
     if (!settled) {
       settled = true;
       console.log("[WebRTC Client] Timeout — falling back to relay");
+      pushDebugLog(`[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`);
       transport.mode = "relay";
       onFail();
     }
@@ -400,6 +446,10 @@ export function createClientRTC(
 /**
  * Handle incoming WebRTC signaling messages on an existing transport.
  * Call this from the WebSocket message handler for rtc-answer and rtc-ice messages.
+ * 
+ * IMPORTANT: ICE candidates are buffered until remote description is set.
+ * This prevents the common "Failed to add ICE candidate" error when candidates
+ * arrive before the answer/offer is processed.
  */
 export function handleRTCSignaling(
   transport: WebRTCTransport | null,
@@ -410,11 +460,32 @@ export function handleRTCSignaling(
 
   if (msg.type === "rtc-answer" && msg.sdp) {
     pc.setRemoteDescription(new RTCSessionDescription(msg.sdp))
-      .then(() => console.log("[WebRTC] Set remote answer"))
-      .catch((err) => console.error("[WebRTC] Failed to set remote answer:", err));
+      .then(() => {
+        console.log("[WebRTC] Set remote answer");
+        transport.remoteDescriptionSet = true;
+        // Flush any buffered ICE candidates
+        if (transport.pendingCandidates && transport.pendingCandidates.length > 0) {
+          pushDebugLog(`[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates (host side)`);
+          for (const candidate of transport.pendingCandidates) {
+            pc.addIceCandidate(new RTCIceCandidate(candidate))
+              .catch((err) => console.error("[WebRTC] Failed to add buffered ICE candidate:", err));
+          }
+          transport.pendingCandidates = [];
+        }
+      })
+      .catch((err) => {
+        console.error("[WebRTC] Failed to set remote answer:", err);
+        pushDebugLog(`[P2P] Failed to set remote answer: ${err.message}`);
+      });
   }
 
   if (msg.type === "rtc-ice" && msg.candidate) {
+    // Buffer ICE candidates if remote description hasn't been set yet
+    if (!transport.remoteDescriptionSet) {
+      if (!transport.pendingCandidates) transport.pendingCandidates = [];
+      transport.pendingCandidates.push(msg.candidate);
+      return;
+    }
     pc.addIceCandidate(new RTCIceCandidate(msg.candidate))
       .catch((err) => console.error("[WebRTC] Failed to add ICE candidate:", err));
   }
