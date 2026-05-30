@@ -104,6 +104,9 @@ export function usePeerHost() {
   const pendingSendsRef = useRef<Map<string, FileSendState>>(new Map());
   const activeSendAbortRef = useRef<AbortController | null>(null);
 
+  // Keep sent file references for chunk-request resend (auto-clean after 120s)
+  const sentFilesRef = useRef<Map<string, { file: File; totalChunks: number; sentAt: number }>>(new Map());
+
   const addItem = useCallback((item: TransferItem) => {
     setItems(prev => [item, ...prev]);
   }, []);
@@ -112,16 +115,69 @@ export function usePeerHost() {
     setItems(prev => prev.map(item => item.id === id ? { ...item, ...updates } : item));
   }, []);
 
+  // Track chunk-request retry state per file (Host as receiver)
+  const chunkRequestRetryRef = useRef<Map<string, { attempts: number; timer: ReturnType<typeof setTimeout> | null }>>(new Map());
+
+  const requestMissingChunks = useCallback((fileId: string, missingChunks: number[]) => {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      pushDebugLog(`[RETRY-ERR] Cannot request chunks — WS not open`);
+      return;
+    }
+    const retryState = chunkRequestRetryRef.current.get(fileId) || { attempts: 0, timer: null };
+    if (retryState.attempts >= 5) {
+      pushDebugLog(`[RETRY-ERR] Max retries (5) reached for ${fileId.slice(0, 8)}, giving up`);
+      updateItem(fileId, { status: "error" });
+      fileChunksRef.current.delete(fileId);
+      chunkRequestRetryRef.current.delete(fileId);
+      return;
+    }
+    retryState.attempts++;
+    chunkRequestRetryRef.current.set(fileId, retryState);
+
+    pushDebugLog(`[RETRY] Requesting ${missingChunks.length} missing chunks (attempt ${retryState.attempts}/5): [${missingChunks.slice(0, 10).join(",")}${missingChunks.length > 10 ? "..." : ""}]`);
+    ws.send(JSON.stringify({
+      type: "chunk-request",
+      fileId,
+      chunks: missingChunks,
+    }));
+
+    // Set a timeout to retry if chunks don't arrive within 10 seconds
+    if (retryState.timer) clearTimeout(retryState.timer);
+    retryState.timer = setTimeout(() => {
+      const entry = fileChunksRef.current.get(fileId);
+      if (!entry) return; // Already assembled
+      const stillMissing: number[] = [];
+      for (const idx of missingChunks) {
+        if (!entry.chunks.has(idx)) stillMissing.push(idx);
+      }
+      if (stillMissing.length > 0) {
+        pushDebugLog(`[RETRY] Timeout — still missing ${stillMissing.length} chunks, retrying...`);
+        requestMissingChunks(fileId, stillMissing);
+      }
+    }, 10000);
+  }, [updateItem]);
+
   const assembleFile = useCallback((fileId: string) => {
     const entry = fileChunksRef.current.get(fileId);
     if (!entry) return;
-    if (entry.received < entry.meta.size) return;
+
+    // Check for missing chunks
+    const missingChunks: number[] = [];
+    for (let i = 0; i < entry.meta.totalChunks; i++) {
+      if (!entry.chunks.has(i)) missingChunks.push(i);
+    }
+    if (missingChunks.length > 0) {
+      pushDebugLog(`[RECV] assembleFile: incomplete ${entry.chunks.size}/${entry.meta.totalChunks} chunks, missing=[${missingChunks.slice(0, 10).join(",")}${missingChunks.length > 10 ? "..." : ""}]`);
+      requestMissingChunks(fileId, missingChunks);
+      return;
+    }
 
     const orderedChunks: ArrayBuffer[] = [];
     for (let i = 0; i < entry.meta.totalChunks; i++) {
       const chunk = entry.chunks.get(i);
       if (!chunk) {
-        console.error(`[Host] Missing chunk ${i} for file ${fileId}`);
+        pushDebugLog(`[RECV-ERR] Missing chunk ${i}/${entry.meta.totalChunks} despite check passed`);
         updateItem(fileId, { status: "error", progress: 0 });
         fileChunksRef.current.delete(fileId);
         return;
@@ -131,15 +187,20 @@ export function usePeerHost() {
 
     const blob = new Blob(orderedChunks, { type: entry.meta.mimeType || "application/octet-stream" });
     if (blob.size !== entry.meta.size) {
-      console.error(`[Host] File size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
+      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
       updateItem(fileId, { status: "error", progress: 0 });
       fileChunksRef.current.delete(fileId);
       return;
     }
 
+    pushDebugLog(`[RECV] DONE: ${entry.meta.name} (${(entry.meta.size / 1024 / 1024).toFixed(1)}MB, ${entry.meta.totalChunks} chunks)`);
     updateItem(fileId, { progress: 100, status: "done", blob });
     fileChunksRef.current.delete(fileId);
-  }, [updateItem]);
+    // Clean up retry timer
+    const retryState = chunkRequestRetryRef.current.get(fileId);
+    if (retryState?.timer) clearTimeout(retryState.timer);
+    chunkRequestRetryRef.current.delete(fileId);
+  }, [updateItem, requestMissingChunks]);
 
   const processBinaryChunk = useCallback((buffer: ArrayBuffer) => {
     if (buffer.byteLength < HEADER_SIZE) return;
@@ -165,7 +226,7 @@ export function usePeerHost() {
     const progress = Math.min(99, Math.round((entry.received / entry.meta.size) * 100));
     updateItem(fileId, { progress, status: "transferring" });
 
-    if (entry.pendingComplete && entry.received >= entry.meta.size) {
+    if (entry.pendingComplete && entry.chunks.size >= entry.meta.totalChunks) {
       assembleFile(fileId);
     }
   }, [updateItem, assembleFile]);
@@ -445,6 +506,10 @@ export function usePeerHost() {
     pendingSendsRef.current.delete(id);
     activeSendAbortRef.current = null;
 
+    // Keep file reference for potential chunk-request resend (120s TTL)
+    sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
+    setTimeout(() => { sentFilesRef.current.delete(id); }, 120_000);
+
     const totalTime = ((Date.now() - resumeStartTime) / 1000).toFixed(1);
     pushDebugLog(`[RESUME] DONE: ${file.name} | ${totalTime}s`);
   }, [updateItem]);
@@ -504,6 +569,47 @@ export function usePeerHost() {
         case "file-complete":
           handleDataMessage(event);
           break;
+
+        // Chunk resend request from receiver
+        case "chunk-request": {
+          const { fileId, chunks: requestedChunks } = msg as { fileId: string; chunks: number[] };
+          const sentFile = sentFilesRef.current.get(fileId);
+          if (!sentFile) {
+            pushDebugLog(`[RESEND-ERR] chunk-request for unknown/expired file ${fileId?.slice(0, 8)}`);
+            break;
+          }
+          pushDebugLog(`[RESEND] Received chunk-request for ${requestedChunks.length} chunks: [${requestedChunks.slice(0, 10).join(",")}${requestedChunks.length > 10 ? "..." : ""}]`);
+          // Resend requested chunks via relay (safest path)
+          (async () => {
+            const ws = wsRef.current;
+            if (!ws || ws.readyState !== WebSocket.OPEN) return;
+            const CHUNK_SZ = 256 * 1024;
+            for (const idx of requestedChunks) {
+              const start = idx * CHUNK_SZ;
+              const end = Math.min(start + CHUNK_SZ, sentFile.file.size);
+              const blob = sentFile.file.slice(start, end);
+              const chunkData = await blob.arrayBuffer();
+              // Build header: 36-byte fileId + 4-byte chunk index
+              const header = new ArrayBuffer(40);
+              const encoder = new TextEncoder();
+              const idBytes = encoder.encode(fileId);
+              new Uint8Array(header).set(idBytes.slice(0, 36), 0);
+              new DataView(header, 36, 4).setUint32(0, idx, false);
+              // Combine header + chunk data
+              const combined = new Uint8Array(header.byteLength + chunkData.byteLength);
+              combined.set(new Uint8Array(header), 0);
+              combined.set(new Uint8Array(chunkData), header.byteLength);
+              // Back-pressure for relay
+              while (ws.bufferedAmount > 512 * 1024) {
+                await new Promise(resolve => setTimeout(resolve, 10));
+                if (ws.readyState !== WebSocket.OPEN) return;
+              }
+              ws.send(combined.buffer);
+            }
+            pushDebugLog(`[RESEND] Done resending ${requestedChunks.length} chunks`);
+          })();
+          break;
+        }
 
         case "peer-disconnected":
           if (msg.permanent) {
@@ -854,6 +960,10 @@ export function usePeerHost() {
     sendState.completed = true;
     pendingSendsRef.current.delete(id);
     activeSendAbortRef.current = null;
+
+    // Keep file reference for potential chunk-request resend (120s TTL)
+    sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
+    setTimeout(() => { sentFilesRef.current.delete(id); }, 120_000);
 
     const totalTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
     const avgSpeed = (file.size / (1024 * 1024)) / ((Date.now() - sendStartTime) / 1000);

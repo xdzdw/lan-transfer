@@ -264,7 +264,8 @@ export function setupSignalingServer(server: Server) {
           // Data relay (fallback when WebRTC not available)
           case "text":
           case "file-meta":
-          case "file-complete": {
+          case "file-complete":
+          case "chunk-request": {
             if (!currentToken || !currentRole) return;
             const room = rooms.get(currentToken);
             if (!room) return;
