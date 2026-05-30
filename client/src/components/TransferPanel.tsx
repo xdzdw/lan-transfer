@@ -39,6 +39,8 @@ interface TransferPanelProps {
   role: "host" | "client";
   transportMode: TransportMode;
   isReconnecting?: boolean;
+  /** The 4-digit room code (host only) — shown so the phone can rejoin */
+  roomCode?: string;
 }
 
 function TransportBadge({ mode }: { mode: TransportMode }) {
@@ -70,7 +72,7 @@ function TransportBadge({ mode }: { mode: TransportMode }) {
   );
 }
 
-export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode, isReconnecting }: TransferPanelProps) {
+export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode, isReconnecting, roomCode }: TransferPanelProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
@@ -194,6 +196,11 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
           <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
             {t("connected")}
           </span>
+          {roomCode && (
+            <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-foreground/5 border border-foreground/10">
+              <span className="text-[11px] font-mono font-bold tracking-[0.15em] text-foreground">{roomCode}</span>
+            </span>
+          )}
           <TransportBadge mode={transportMode} />
         </div>
         <div className="flex items-center gap-3">

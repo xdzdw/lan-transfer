@@ -184,6 +184,7 @@ export default function Home() {
             role={mode === "host" ? "host" : "client"}
             transportMode={mode === "host" ? host.transportMode : client.transportMode}
             isReconnecting={mode === "host" ? host.status === "reconnecting" : client.status === "reconnecting"}
+            roomCode={mode === "host" ? host.token : undefined}
           />
         </div>
       </div>
