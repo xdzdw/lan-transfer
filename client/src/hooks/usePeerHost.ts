@@ -41,6 +41,8 @@ export interface TransferItem {
   progress?: number;
   timestamp: number;
   status: "pending" | "transferring" | "done" | "error";
+  /** True if file was assembled with size mismatch (may be incomplete) */
+  sizeMismatch?: boolean;
 }
 
 interface FileChunkMeta {
@@ -188,9 +190,18 @@ export function usePeerHost() {
 
     const blob = new Blob(orderedChunks, { type: entry.meta.mimeType || "application/octet-stream" });
     if (blob.size !== entry.meta.size) {
-      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
-      updateItem(fileId, { status: "error", progress: 0 });
+      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size} (diff=${entry.meta.size - blob.size} bytes)`);
+      // Still provide the file for download with a warning — don't discard user's data
+      pushDebugLog(`[RECV] Providing file despite size mismatch — user can still download`);
+      updateItem(fileId, { progress: 100, status: "done", blob, sizeMismatch: true });
       fileChunksRef.current.delete(fileId);
+      const retryState = chunkRequestRetryRef.current.get(fileId);
+      if (retryState?.timer) clearTimeout(retryState.timer);
+      chunkRequestRetryRef.current.delete(fileId);
+      const ws = wsRef.current;
+      const ackStr = JSON.stringify({ type: "file-ack", fileId });
+      sendViaTransport(rtcRef.current, ws, ackStr);
+      pushDebugLog(`[ACK] Sent file-ack (with size warning) for ${entry.meta.name}`);
       return;
     }
 

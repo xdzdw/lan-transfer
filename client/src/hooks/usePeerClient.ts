@@ -173,9 +173,20 @@ export function usePeerClient() {
 
     const blob = new Blob(orderedChunks, { type: entry.meta.mimeType || "application/octet-stream" });
     if (blob.size !== entry.meta.size) {
-      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
-      updateItem(fileId, { status: "error", progress: 0 });
+      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size} (diff=${entry.meta.size - blob.size} bytes)`);
+      // Still provide the file for download with a warning — don't discard user's data
+      // The file may be usable despite size difference (e.g., last chunk truncated)
+      pushDebugLog(`[RECV] Providing file despite size mismatch — user can still download`);
+      updateItem(fileId, { progress: 100, status: "done", blob, sizeMismatch: true });
       fileChunksRef.current.delete(fileId);
+      const retryState = chunkRequestRetryRef.current.get(fileId);
+      if (retryState?.timer) clearTimeout(retryState.timer);
+      chunkRequestRetryRef.current.delete(fileId);
+      // Still send ack so sender knows we're done
+      const ws = wsRef.current;
+      const ackStr = JSON.stringify({ type: "file-ack", fileId });
+      sendViaTransport(rtcRef.current, ws, ackStr);
+      pushDebugLog(`[ACK] Sent file-ack (with size warning) for ${entry.meta.name}`);
       return;
     }
 

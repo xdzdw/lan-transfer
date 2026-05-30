@@ -10,6 +10,7 @@ import { formatFileSize, formatTime, getFileCategory } from "@/lib/format";
 import type { TransferItem } from "@/hooks/usePeerHost";
 import { useI18n } from "@/contexts/I18nContext";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUp,
   Check,
@@ -144,13 +145,20 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
           </div>
         )}
         {item.status === "done" && isReceived && item.blob && (
-          <button
-            onClick={handleDownload}
-            className="p-1.5 rounded-md hover:bg-muted transition-all"
-            title={t("saveFile")}
-          >
-            <Download className="size-3.5 text-primary" />
-          </button>
+          <div className="flex items-center gap-1">
+            {item.sizeMismatch && (
+              <span title="File may be incomplete">
+                <AlertTriangle className="size-3 text-amber-500" />
+              </span>
+            )}
+            <button
+              onClick={handleDownload}
+              className="p-1.5 rounded-md hover:bg-muted transition-all"
+              title={item.sizeMismatch ? "File may be incomplete - download anyway" : t("saveFile")}
+            >
+              <Download className={`size-3.5 ${item.sizeMismatch ? "text-amber-500" : "text-primary"}`} />
+            </button>
+          </div>
         )}
         {item.status === "done" && !isReceived && (
           <Check className="size-3.5 text-primary/60" />
