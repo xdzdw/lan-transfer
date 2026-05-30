@@ -29,6 +29,7 @@ import {
   type WebRTCTransport,
   type TransportMode,
 } from "@/lib/webrtc";
+import { pushDebugLog } from "@/components/DebugPanel";
 
 interface FileChunkMeta {
   id: string;
@@ -237,18 +238,19 @@ export function usePeerClient() {
       () => {
         rtcRef.current = transport;
         setTransportMode("p2p");
+        pushDebugLog("[P2P] DataChannel OPEN — P2P mode active");
         console.log("[Client] WebRTC P2P established! Transfers will use direct connection.");
       },
       // onMessage — data from DataChannel
       handleDataMessage,
       // onClose — DataChannel closed, fall back to relay
       () => {
-        console.log("[Client] DataChannel closed, falling back to relay");
+        pushDebugLog("[P2P] DataChannel CLOSED — fallback to relay");
         setTransportMode("relay");
       },
       // onFail — WebRTC failed, stay on relay
       () => {
-        console.log("[Client] WebRTC failed, using relay mode");
+        pushDebugLog("[P2P] WebRTC FAILED — using relay mode");
         setTransportMode("relay");
       },
     );
@@ -352,29 +354,29 @@ export function usePeerClient() {
 
       switch (msg.type) {
         case "connected":
+          pushDebugLog(`[WS] Connected to host (reconnected=${!!msg.reconnected})`);
           setStatus("connected");
           setError("");
           wasConnectedRef.current = true;
           reconnectAttemptRef.current = 0;
-          // If this is a reconnection, resume pending sends
           if (msg.reconnected) {
-            console.log("[Client] Reconnected to session, resuming...");
+            pushDebugLog("[RECONNECT] Resuming pending file sends...");
             resumePendingSends();
           }
           break;
 
         case "rejoined":
-          console.log("[Client] Rejoined room successfully");
+          pushDebugLog("[RECONNECT] Rejoined room OK");
           break;
 
         // WebRTC signaling messages
         case "rtc-offer":
-          // Only handle new offer if we don't already have an active P2P connection
           if (wsRef.current && msg.sdp) {
             if (!rtcRef.current || rtcRef.current.dataChannel?.readyState !== "open") {
+              pushDebugLog("[P2P] Received RTC offer, creating answer...");
               handleRTCOffer(wsRef.current, msg.sdp);
             } else {
-              console.log("[Client] Ignoring rtc-offer — DataChannel already open");
+              pushDebugLog("[P2P] Ignoring rtc-offer — DC already open");
             }
           }
           break;
@@ -392,7 +394,7 @@ export function usePeerClient() {
 
         case "peer-disconnected":
           if (msg.permanent) {
-            // Host permanently gone
+            pushDebugLog("[WS] Host PERMANENTLY disconnected");
             setStatus("error");
             setError("Host disconnected");
             setTransportMode("relay");
@@ -401,20 +403,17 @@ export function usePeerClient() {
               rtcRef.current = null;
             }
           } else {
-            // Host's signaling WebSocket temporarily disconnected
-            // BUT the WebRTC DataChannel may still be working (it's independent!)
-            console.log("[Client] Host signaling temporarily disconnected");
+            pushDebugLog(`[WS] Host temporarily disconnected, DC=${rtcRef.current?.dataChannel?.readyState || "none"}`);
             if (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open") {
               setTransportMode("relay");
             } else {
-              console.log("[Client] DataChannel still open — keeping P2P mode");
+              pushDebugLog("[P2P] DataChannel still open — keeping P2P");
             }
-            // Do NOT close RTC — it may still be working fine over LAN
           }
           break;
 
         case "peer-reconnected":
-          console.log("[Client] Host reconnected!");
+          pushDebugLog("[WS] Host reconnected!");
           setStatus("connected");
           setError("");
           break;
@@ -447,7 +446,7 @@ export function usePeerClient() {
     const attempt = reconnectAttemptRef.current;
     // Exponential backoff: 1s, 2s, 4s, 8s, max 10s
     const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-    console.log(`[Client] Reconnecting in ${delay}ms (attempt ${attempt + 1})...`);
+    pushDebugLog(`[RECONNECT] Attempt ${attempt + 1} in ${delay}ms...`);
 
     setStatus("reconnecting");
 
@@ -459,8 +458,7 @@ export function usePeerClient() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          console.log("[Client] WebSocket reconnected, rejoining room...");
-          // Send rejoin instead of join
+          pushDebugLog(`[RECONNECT] WS reconnected, rejoining token=${tokenRef.current}`);
           ws.send(JSON.stringify({ type: "rejoin", token: tokenRef.current, role: "client" }));
           pingRef.current = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -541,7 +539,7 @@ export function usePeerClient() {
       ws.onclose = () => {
         clearTimeout(timeout);
         if (pingRef.current) clearInterval(pingRef.current);
-        console.log("[Client] WebSocket closed");
+        pushDebugLog("[WS] Connection closed");
 
         // Auto-reconnect if we were previously connected and didn't intentionally close
         if (!intentionalCloseRef.current && wasConnectedRef.current) {

@@ -28,6 +28,7 @@ import {
   type WebRTCTransport,
   type TransportMode,
 } from "@/lib/webrtc";
+import { pushDebugLog } from "@/components/DebugPanel";
 
 export interface TransferItem {
   id: string;
@@ -253,18 +254,18 @@ export function usePeerHost() {
       () => {
         rtcRef.current = transport;
         setTransportMode("p2p");
-        console.log("[Host] WebRTC P2P established! Transfers will use direct connection.");
+        pushDebugLog("[P2P] DataChannel OPEN — P2P mode active");
       },
       // onMessage — data from DataChannel
       handleDataMessage,
       // onClose — DataChannel closed, fall back to relay
       () => {
-        console.log("[Host] DataChannel closed, falling back to relay");
+        pushDebugLog("[P2P] DataChannel CLOSED — fallback to relay");
         setTransportMode("relay");
       },
       // onFail — WebRTC failed, stay on relay
       () => {
-        console.log("[Host] WebRTC failed, using relay mode");
+        pushDebugLog("[P2P] WebRTC FAILED — using relay mode");
         setTransportMode("relay");
       },
     );
@@ -364,7 +365,7 @@ export function usePeerHost() {
 
       switch (msg.type) {
         case "registered":
-          console.log("[Host] Registered with token:", msg.token);
+          pushDebugLog(`[WS] Registered token=${msg.token}`);
           reconnectAttemptRef.current = 0;
           // Restore previous status after reconnection
           if (previousStatusRef.current === "connected") {
@@ -377,16 +378,20 @@ export function usePeerHost() {
           break;
 
         case "connected":
+          pushDebugLog(`[WS] Client connected (reconnected=${!!msg.reconnected})`);
           setStatus("connected");
           setError("");
           previousStatusRef.current = "connected";
           // Only start WebRTC if we don't already have an active P2P connection
           if (wsRef.current && (!rtcRef.current || rtcRef.current.dataChannel?.readyState !== "open")) {
+            pushDebugLog("[P2P] Initiating WebRTC upgrade...");
             initiateWebRTC(wsRef.current);
+          } else {
+            pushDebugLog("[P2P] Existing DataChannel still open, skipping re-init");
           }
           // If this is a reconnection, resume pending sends
           if (msg.reconnected) {
-            console.log("[Host] Reconnected to session, resuming...");
+            pushDebugLog("[RECONNECT] Resuming pending file sends...");
             resumePendingSends();
           }
           break;
@@ -406,29 +411,26 @@ export function usePeerHost() {
 
         case "peer-disconnected":
           if (msg.permanent) {
+            pushDebugLog("[WS] Peer PERMANENTLY disconnected");
             setStatus("waiting");
             previousStatusRef.current = "waiting";
             setTransportMode("relay");
-            // Only close RTC on permanent disconnect
             if (rtcRef.current) {
               rtcRef.current.close();
               rtcRef.current = null;
             }
           } else {
-            // Client's signaling WebSocket temporarily disconnected
-            // BUT the WebRTC DataChannel may still be working (it's independent!)
-            // Only fall back to relay if DataChannel is not open
-            console.log("[Host] Client signaling temporarily disconnected");
+            pushDebugLog(`[WS] Peer temporarily disconnected, DC=${rtcRef.current?.dataChannel?.readyState || "none"}`);
             if (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open") {
               setTransportMode("relay");
             } else {
-              console.log("[Host] DataChannel still open — keeping P2P mode");
+              pushDebugLog("[P2P] DataChannel still open — keeping P2P");
             }
           }
           break;
 
         case "peer-reconnected":
-          console.log("[Host] Client reconnected!");
+          pushDebugLog("[WS] Peer reconnected!");
           setStatus("connected");
           setError("");
           // Only re-initiate WebRTC if current P2P is not working
@@ -458,7 +460,7 @@ export function usePeerHost() {
 
     const attempt = reconnectAttemptRef.current;
     const delay = Math.min(1000 * Math.pow(2, attempt), 10000);
-    console.log(`[Host] Reconnecting in ${delay}ms (attempt ${attempt + 1})...`);
+    pushDebugLog(`[RECONNECT] Attempt ${attempt + 1} in ${delay}ms...`);
 
     setStatus("reconnecting");
 
@@ -470,8 +472,7 @@ export function usePeerHost() {
         wsRef.current = ws;
 
         ws.onopen = () => {
-          console.log("[Host] WebSocket reconnected, re-registering room...");
-          // Re-register with same token
+          pushDebugLog(`[RECONNECT] WS reconnected, re-registering token=${tokenRef.current}`);
           ws.send(JSON.stringify({ type: "register", token: tokenRef.current }));
           pingRef.current = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
@@ -534,7 +535,7 @@ export function usePeerHost() {
 
       ws.onclose = () => {
         if (pingRef.current) clearInterval(pingRef.current);
-        console.log("[Host] WebSocket closed");
+        pushDebugLog("[WS] Connection closed");
 
         // Auto-reconnect if we didn't intentionally close
         if (!intentionalCloseRef.current && wasStartedRef.current) {
@@ -576,7 +577,7 @@ export function usePeerHost() {
       timestamp: Date.now(),
       status: "done",
     });
-    console.log(`[Host] Sent text via ${mode}`);
+    pushDebugLog(`[SEND] Text via ${mode}`);
   }, [addItem]);
 
   const sendFile = useCallback(async (file: File) => {
