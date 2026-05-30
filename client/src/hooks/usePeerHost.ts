@@ -341,26 +341,26 @@ export function usePeerHost() {
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
       // Back-pressure: wait until buffer drains, no hard limit
-      const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = isP2P ? 2 * 1024 * 1024 : 512 * 1024;
+      const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024;
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, 30));
+        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30));
         bpWaits++;
-        const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+        const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
         const wsOpen = ws?.readyState === WebSocket.OPEN;
-        if (!dcOpen && !wsOpen) {
+        if (!dcStillOpen && !wsOpen) {
           pushDebugLog(`[ERR] Both transports dead at resume chunk ${i}/${totalChunks}`);
           sendState.lastSentChunk = i - 1;
           return;
         }
-        if (bpWaits % 100 === 0) {
-          pushDebugLog(`[WARN] Resume back-pressure wait ${bpWaits} at chunk ${i}`);
+        if (bpWaits % 200 === 0) {
+          pushDebugLog(`[WARN] Resume back-pressure wait ${bpWaits} at chunk ${i}, dc=${dcStillOpen ? "open" : "closed"}`);
         }
       }
 
-      sendViaTransport(rtcRef.current, ws, combined);
+      const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
@@ -370,7 +370,8 @@ export function usePeerHost() {
         const elapsed = (Date.now() - resumeStartTime) / 1000;
         const sentBytes = (i - startChunk + 1) * CHUNK_SIZE;
         const speedMBs = (sentBytes / (1024 * 1024)) / elapsed;
-        pushDebugLog(`[RESUME] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${isP2P ? "P2P" : "relay"}`);
+        const dcState = rtcRef.current?.dataChannel?.readyState || "none";
+        pushDebugLog(`[RESUME] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`);
         lastLoggedProgress = progress;
       }
     }
@@ -511,7 +512,7 @@ export function usePeerHost() {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: "ping" }));
             }
-          }, 25000);
+          }, 15000);
         };
 
         ws.onmessage = handleWsMessage;
@@ -561,7 +562,7 @@ export function usePeerHost() {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "ping" }));
           }
-        }, 25000);
+        }, 15000);
       };
 
       ws.onmessage = handleWsMessage;
@@ -675,27 +676,27 @@ export function usePeerHost() {
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
       // Back-pressure: wait until buffer drains, no hard limit
-      const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = isP2P ? 2 * 1024 * 1024 : 512 * 1024;
+      const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024; // 4MB for P2P, 512KB for relay
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, 30));
+        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30)); // Faster polling for P2P
         bpWaits++;
         // Check if both transports are dead
-        const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+        const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
         const wsOpen = ws?.readyState === WebSocket.OPEN;
-        if (!dcOpen && !wsOpen) {
+        if (!dcStillOpen && !wsOpen) {
           pushDebugLog(`[ERR] Both transports dead at chunk ${i}/${totalChunks}`);
           sendState.lastSentChunk = i - 1;
           return;
         }
-        if (bpWaits % 100 === 0) {
-          pushDebugLog(`[WARN] Back-pressure wait ${bpWaits} at chunk ${i}, buf=${(getTransportBufferedAmount(rtcRef.current, ws) / 1024).toFixed(0)}KB`);
+        if (bpWaits % 200 === 0) {
+          pushDebugLog(`[WARN] Back-pressure wait ${bpWaits} at chunk ${i}, buf=${(getTransportBufferedAmount(rtcRef.current, ws) / 1024).toFixed(0)}KB, dc=${dcStillOpen ? "open" : "closed"}`);
         }
       }
 
-      sendViaTransport(rtcRef.current, ws, combined);
+      const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
@@ -706,7 +707,8 @@ export function usePeerHost() {
         const elapsed = (Date.now() - sendStartTime) / 1000;
         const sentBytes = (i + 1) * CHUNK_SIZE;
         const speedMBs = (sentBytes / (1024 * 1024)) / elapsed;
-        pushDebugLog(`[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${isP2P ? "P2P" : "relay"}`);
+        const dcState = rtcRef.current?.dataChannel?.readyState || "none";
+        pushDebugLog(`[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`);
         lastLoggedProgress = progress;
       }
     }

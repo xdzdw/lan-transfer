@@ -15,6 +15,8 @@
  * - sendViaTransport locks to a channel for the duration of a transfer
  */
 
+import { pushDebugLog } from "@/components/DebugPanel";
+
 // Public STUN servers for NAT traversal
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
@@ -67,6 +69,8 @@ export function createHostRTC(
     // Use default reliable mode (no maxRetransmits/maxPacketLifeTime)
   });
   dc.binaryType = "arraybuffer";
+  // Set bufferedAmountLowThreshold for efficient back-pressure
+  dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
   transport.dataChannel = dc;
 
   dc.onopen = () => {
@@ -80,6 +84,8 @@ export function createHostRTC(
     transport.mode = "p2p";
     transport.wasP2P = true;
     console.log("[WebRTC Host] DataChannel open — P2P mode active");
+    // Log ICE candidate pair info for debugging
+    logSelectedCandidatePair(pc, "Host");
     onOpen();
   };
 
@@ -240,6 +246,8 @@ export function createClientRTC(
   pc.ondatachannel = (event) => {
     const dc = event.channel;
     dc.binaryType = "arraybuffer";
+    // Set bufferedAmountLowThreshold for efficient back-pressure
+    dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
     transport.dataChannel = dc;
 
     dc.onopen = () => {
@@ -253,6 +261,8 @@ export function createClientRTC(
       transport.mode = "p2p";
       transport.wasP2P = true;
       console.log("[WebRTC Client] DataChannel open — P2P mode active");
+      // Log ICE candidate pair info for debugging
+      logSelectedCandidatePair(pc, "Client");
       onOpen();
     };
 
@@ -401,6 +411,39 @@ export function handleRTCSignaling(
 }
 
 /**
+ * Log the selected ICE candidate pair for debugging connection type.
+ */
+function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
+  try {
+    pc.getStats().then((stats) => {
+      stats.forEach((report) => {
+        if (report.type === "candidate-pair" && report.state === "succeeded") {
+          const localId = report.localCandidateId;
+          const remoteId = report.remoteCandidateId;
+          let localType = "unknown";
+          let remoteType = "unknown";
+          let localAddr = "";
+          let remoteAddr = "";
+          stats.forEach((r) => {
+            if (r.id === localId) {
+              localType = r.candidateType || "unknown";
+              localAddr = `${r.address || r.ip || ""}:${r.port || ""}`;
+            }
+            if (r.id === remoteId) {
+              remoteType = r.candidateType || "unknown";
+              remoteAddr = `${r.address || r.ip || ""}:${r.port || ""}`;
+            }
+          });
+          pushDebugLog(`[ICE] ${role} pair: local=${localType}(${localAddr}) remote=${remoteType}(${remoteAddr})`);
+        }
+      });
+    });
+  } catch (e) {
+    // Ignore stats errors
+  }
+}
+
+/**
  * Send data through the best available channel.
  * Prefers DataChannel (P2P) if open, falls back to WebSocket (relay).
  * 
@@ -423,7 +466,17 @@ export function sendViaTransport(
       transport.dataChannel.send(data as any);
       return "p2p";
     } catch (err) {
+      // Log to debug panel so user can see why P2P failed
+      const errMsg = err instanceof Error ? err.message : String(err);
+      const bufAmt = transport.dataChannel.bufferedAmount;
+      pushDebugLog(`[P2P-ERR] send failed: ${errMsg} | buf=${(bufAmt / 1024).toFixed(0)}KB | dataSize=${typeof data === "string" ? data.length : (data as ArrayBuffer).byteLength}B`);
       console.warn("[Transport] DataChannel send failed, falling back to relay:", err);
+    }
+  } else if (transport?.dataChannel) {
+    // DataChannel exists but not open — log once for debugging
+    if (!sendViaTransport._loggedNotOpen) {
+      pushDebugLog(`[P2P-WARN] DataChannel exists but state=${transport.dataChannel.readyState}, using relay`);
+      sendViaTransport._loggedNotOpen = true;
     }
   }
 
@@ -435,6 +488,8 @@ export function sendViaTransport(
 
   return "relay";
 }
+// Track whether we've logged the "not open" warning to avoid spam
+sendViaTransport._loggedNotOpen = false as boolean;
 
 /**
  * Check the buffered amount of the active transport channel.
