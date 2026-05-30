@@ -18,12 +18,36 @@
 
 import { pushDebugLog } from "@/components/DebugPanel";
 
-// STUN servers — Google primary + international fallbacks
+// STUN + TURN servers
+// TURN is critical: browsers use mDNS for host candidates (privacy),
+// which cannot be resolved cross-device. TURN provides relay candidates
+// that bypass this limitation entirely.
 const ICE_SERVERS: RTCIceServer[] = [
+  // STUN — Google primary
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
-  { urls: "stun:stun.cloudflare.com:3478" },
+  // TURN — Open Relay Project (free, ports 80/443 bypass firewalls)
+  // Docs: https://www.metered.ca/tools/openrelay/
+  {
+    urls: "turn:openrelay.metered.ca:80",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:80?transport=tcp",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turn:openrelay.metered.ca:443",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
+  {
+    urls: "turns:openrelay.metered.ca:443?transport=tcp",
+    username: "openrelayproject",
+    credential: "openrelayproject",
+  },
 ];
 
 const RTC_TIMEOUT_MS = 15000; // 15 seconds to establish WebRTC (increased for slow STUN)
