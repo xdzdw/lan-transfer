@@ -80,7 +80,7 @@ export function DebugPanel() {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="fixed bottom-4 left-4 z-[9999] flex items-center gap-1 px-2 py-1 rounded-full bg-gray-900/80 text-white text-[10px] font-mono shadow-lg backdrop-blur-sm border border-gray-700"
+        className="fixed bottom-20 left-4 z-[9999] flex items-center gap-1 px-2 py-1 rounded-full bg-gray-900/80 text-white text-[10px] font-mono shadow-lg backdrop-blur-sm border border-gray-700"
       >
         <Bug className="size-3" />
         <span>{BUILD_VERSION}</span>
