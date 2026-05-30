@@ -128,8 +128,8 @@ export function usePeerHost() {
       return;
     }
     const retryState = chunkRequestRetryRef.current.get(fileId) || { attempts: 0, timer: null };
-    if (retryState.attempts >= 5) {
-      pushDebugLog(`[RETRY-ERR] Max retries (5) reached for ${fileId.slice(0, 8)}, giving up`);
+    if (retryState.attempts >= 15) {
+      pushDebugLog(`[RETRY-ERR] Max retries (15) reached for ${fileId.slice(0, 8)}, giving up`);
       updateItem(fileId, { status: "error" });
       fileChunksRef.current.delete(fileId);
       chunkRequestRetryRef.current.delete(fileId);
@@ -138,7 +138,7 @@ export function usePeerHost() {
     retryState.attempts++;
     chunkRequestRetryRef.current.set(fileId, retryState);
 
-    pushDebugLog(`[RETRY] Requesting ${missingChunks.length} missing chunks (attempt ${retryState.attempts}/5): [${missingChunks.slice(0, 10).join(",")}${missingChunks.length > 10 ? "..." : ""}]`);
+    pushDebugLog(`[RETRY] Requesting ${missingChunks.length} missing chunks (attempt ${retryState.attempts}/15): [${missingChunks.slice(0, 10).join(",")}${missingChunks.length > 10 ? "..." : ""}]`);
     ws.send(JSON.stringify({
       type: "chunk-request",
       fileId,
