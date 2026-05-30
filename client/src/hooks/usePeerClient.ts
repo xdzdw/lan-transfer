@@ -84,7 +84,8 @@ export function usePeerClient() {
 
   // File send tracking for resume
   const pendingSendsRef = useRef<Map<string, FileSendState>>(new Map());
-  const activeSendAbortRef = useRef<AbortController | null>(null);
+  // Per-file abort controllers to prevent duplicate send loops
+  const activeSendAbortsRef = useRef<Map<string, AbortController>>(new Map());
 
   // Keep sent file references for chunk-request resend (auto-clean after 120s)
   const sentFilesRef = useRef<Map<string, { file: File; totalChunks: number; sentAt: number }>>(new Map());
@@ -185,6 +186,11 @@ export function usePeerClient() {
     const retryState = chunkRequestRetryRef.current.get(fileId);
     if (retryState?.timer) clearTimeout(retryState.timer);
     chunkRequestRetryRef.current.delete(fileId);
+    // Send file-ack back to sender so they know we received it completely
+    const ws = wsRef.current;
+    const ackStr = JSON.stringify({ type: "file-ack", fileId });
+    sendViaTransport(rtcRef.current, ws, ackStr);
+    pushDebugLog(`[ACK] Sent file-ack for ${entry.meta.name}`);
   }, [updateItem]);
 
   // Track last logged receive progress per file to avoid log spam
@@ -303,11 +309,27 @@ export function usePeerClient() {
           }
           break;
         }
+
+        case "file-ack": {
+          // Receiver (Host) confirmed they got the complete file
+          const ackFileId = msg.fileId as string;
+          pushDebugLog(`[ACK] Received file-ack for ${ackFileId?.slice(0, 8)}`);
+          const pendingSend = pendingSendsRef.current.get(ackFileId);
+          if (pendingSend && !pendingSend.completed) {
+            pendingSend.completed = true;
+            pendingSendsRef.current.delete(ackFileId);
+            updateItem(ackFileId, { progress: 100, status: "done" });
+            const ctrl = activeSendAbortsRef.current.get(ackFileId);
+            if (ctrl) { ctrl.abort(); activeSendAbortsRef.current.delete(ackFileId); }
+            pushDebugLog(`[ACK] File marked complete on sender side`);
+          }
+          break;
+        }
       }
     } catch (err) {
       console.error("[Client] Error handling data message:", err);
     }
-  }, [addItem, processBinaryChunk, assembleFile]);
+  }, [addItem, processBinaryChunk, assembleFile, updateItem]);
 
   /** Handle WebRTC offer from host — create answer and establish P2P */
   const handleRTCOffer = useCallback((ws: WebSocket, offer: RTCSessionDescriptionInit) => {
@@ -351,8 +373,12 @@ export function usePeerClient() {
   const resumePendingSends = useCallback(() => {
     for (const [id, sendState] of Array.from(pendingSendsRef.current.entries())) {
       if (sendState.completed) continue;
-      console.log(`[Client] Resuming file send ${sendState.file.name} from chunk ${sendState.lastSentChunk + 1}/${sendState.totalChunks}`);
-      // Re-send from where we left off
+      // Skip if this file already has an active send loop running
+      if (activeSendAbortsRef.current.has(id)) {
+        pushDebugLog(`[RESUME-SKIP] ${sendState.file.name} already has active send loop`);
+        continue;
+      }
+      pushDebugLog(`[RESUME] ${sendState.file.name} from chunk ${sendState.lastSentChunk + 1}/${sendState.totalChunks}`);
       resumeFileSend(sendState);
     }
   }, []);
@@ -383,7 +409,7 @@ export function usePeerClient() {
 
     const buffer = await file.arrayBuffer();
     const abortController = new AbortController();
-    activeSendAbortRef.current = abortController;
+    activeSendAbortsRef.current.set(id, abortController);
     const resumeStartTime = Date.now();
     let lastLoggedProgress = 0;
 
@@ -462,7 +488,7 @@ export function usePeerClient() {
     updateItem(id, { progress: 100, status: "done" });
     sendState.completed = true;
     pendingSendsRef.current.delete(id);
-    activeSendAbortRef.current = null;
+    activeSendAbortsRef.current.delete(id);
 
     // Keep file reference for potential chunk-request resend (120s TTL)
     sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
@@ -519,6 +545,7 @@ export function usePeerClient() {
         case "text":
         case "file-meta":
         case "file-complete":
+        case "file-ack":
           handleDataMessage(event);
           break;
 
@@ -714,11 +741,11 @@ export function usePeerClient() {
 
         // Auto-reconnect if we were previously connected and didn't intentionally close
         if (!intentionalCloseRef.current && wasConnectedRef.current) {
-          // Only abort file sends if DataChannel is NOT available
-          // If P2P is still working, the file can continue sending via DataChannel
-          if (activeSendAbortRef.current && (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open")) {
-            activeSendAbortRef.current.abort();
-            activeSendAbortRef.current = null;
+          // Abort ALL active send loops so they stop competing for the buffer
+          // They will be cleanly resumed after reconnection
+          if (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open") {
+            activeSendAbortsRef.current.forEach((ctrl) => ctrl.abort());
+            activeSendAbortsRef.current.clear();
           }
           attemptReconnect();
         }
@@ -796,7 +823,7 @@ export function usePeerClient() {
 
     const buffer = await file.arrayBuffer();
     const abortController = new AbortController();
-    activeSendAbortRef.current = abortController;
+    activeSendAbortsRef.current.set(id, abortController);
     const sendStartTime = Date.now();
     let lastLoggedProgress = 0;
 
@@ -848,7 +875,7 @@ export function usePeerClient() {
             sendState.lastSentChunk = i - 1;
             return;
           }
-          if (bpWaits % 100 === 0) {
+          if (bpWaits % 500 === 0) {
             pushDebugLog(`[WARN] Relay back-pressure wait ${bpWaits} at chunk ${i}, buf=${(ws.bufferedAmount / 1024).toFixed(0)}KB`);
           }
         }
@@ -921,7 +948,7 @@ export function usePeerClient() {
     updateItem(id, { progress: 100, status: "done" });
     sendState.completed = true;
     pendingSendsRef.current.delete(id);
-    activeSendAbortRef.current = null;
+    activeSendAbortsRef.current.delete(id);
 
     // Keep file reference for potential chunk-request resend (120s TTL)
     sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
@@ -938,10 +965,9 @@ export function usePeerClient() {
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = null;
     }
-    if (activeSendAbortRef.current) {
-      activeSendAbortRef.current.abort();
-      activeSendAbortRef.current = null;
-    }
+    // Abort all active send loops
+    activeSendAbortsRef.current.forEach((ctrl) => ctrl.abort());
+    activeSendAbortsRef.current.clear();
     if (pingRef.current) clearInterval(pingRef.current);
     if (rtcRef.current) {
       rtcRef.current.close();

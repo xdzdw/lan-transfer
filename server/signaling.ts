@@ -265,6 +265,7 @@ export function setupSignalingServer(server: Server) {
           case "text":
           case "file-meta":
           case "file-complete":
+          case "file-ack":
           case "chunk-request": {
             if (!currentToken || !currentRole) return;
             const room = rooms.get(currentToken);
