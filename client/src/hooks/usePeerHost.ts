@@ -746,7 +746,9 @@ export function usePeerHost() {
 
   const startHost = useCallback(() => {
     try {
-      const t = String(Math.floor(1000 + Math.random() * 9000));
+      // Generate 4-digit token excluding digit 4
+      const digits = "012356789";
+      const t = Array.from({ length: 4 }, () => digits[Math.floor(Math.random() * digits.length)]).join("");
       setToken(t);
       tokenRef.current = t;
       setStatus("waiting");
