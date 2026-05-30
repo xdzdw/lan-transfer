@@ -18,13 +18,11 @@
 
 import { pushDebugLog } from "@/components/DebugPanel";
 
-// STUN servers — China-accessible + international fallbacks
+// STUN servers — Google primary + international fallbacks
 const ICE_SERVERS: RTCIceServer[] = [
-  // China-accessible STUN servers (prioritized)
-  { urls: "stun:stun.miwifi.com:3478" },
-  { urls: "stun:stun.qq.com:3478" },
-  // International fallbacks (may not work in China but help elsewhere)
   { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  { urls: "stun:stun2.l.google.com:19302" },
   { urls: "stun:stun.cloudflare.com:3478" },
 ];
 
@@ -124,19 +122,30 @@ export function createHostRTC(
     console.error("[WebRTC Host] DataChannel error:", e);
   };
 
-  // Send ICE candidates to client via WebSocket
+  // Send ICE candidates to client via WebSocket + log each candidate for diagnosis
   pc.onicecandidate = (event) => {
-    if (event.candidate && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: "rtc-ice",
-        candidate: event.candidate.toJSON(),
-      }));
+    if (event.candidate) {
+      const c = event.candidate;
+      pushDebugLog(`[ICE-CAND] Host local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "rtc-ice",
+          candidate: c.toJSON(),
+        }));
+      }
+    } else {
+      pushDebugLog(`[ICE-CAND] Host gathering complete (null candidate)`);
     }
   };
 
   // Log ICE gathering state changes
   pc.onicegatheringstatechange = () => {
     pushDebugLog(`[ICE] Host gathering: ${pc.iceGatheringState}`);
+  };
+
+  // Log ICE connection state for more granular diagnosis
+  pc.oniceconnectionstatechange = () => {
+    pushDebugLog(`[ICE] Host iceConnection: ${pc.iceConnectionState}`);
   };
 
   pc.onconnectionstatechange = () => {
@@ -179,6 +188,7 @@ export function createHostRTC(
 
     if (state === "failed") {
       // "failed" is PERMANENT — ICE failed, no recovery possible
+      logICEFailureDiagnosis(pc, "Host");
       if (disconnectTimerId) {
         clearTimeout(disconnectTimerId);
         disconnectTimerId = null;
@@ -318,19 +328,30 @@ export function createClientRTC(
     };
   };
 
-  // Send ICE candidates to host via WebSocket
+  // Send ICE candidates to host via WebSocket + log each candidate for diagnosis
   pc.onicecandidate = (event) => {
-    if (event.candidate && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: "rtc-ice",
-        candidate: event.candidate.toJSON(),
-      }));
+    if (event.candidate) {
+      const c = event.candidate;
+      pushDebugLog(`[ICE-CAND] Client local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: "rtc-ice",
+          candidate: c.toJSON(),
+        }));
+      }
+    } else {
+      pushDebugLog(`[ICE-CAND] Client gathering complete (null candidate)`);
     }
   };
 
   // Log ICE gathering state changes
   pc.onicegatheringstatechange = () => {
     pushDebugLog(`[ICE] Client gathering: ${pc.iceGatheringState}`);
+  };
+
+  // Log ICE connection state for more granular diagnosis
+  pc.oniceconnectionstatechange = () => {
+    pushDebugLog(`[ICE] Client iceConnection: ${pc.iceConnectionState}`);
   };
 
   pc.onconnectionstatechange = () => {
@@ -363,6 +384,7 @@ export function createClientRTC(
     }
 
     if (state === "failed") {
+      logICEFailureDiagnosis(pc, "Client");
       if (disconnectTimerId) {
         clearTimeout(disconnectTimerId);
         disconnectTimerId = null;
@@ -505,19 +527,87 @@ function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
           let remoteType = "unknown";
           let localAddr = "";
           let remoteAddr = "";
+          let localProto = "";
+          let remoteProto = "";
           stats.forEach((r) => {
             if (r.id === localId) {
               localType = r.candidateType || "unknown";
               localAddr = `${r.address || r.ip || ""}:${r.port || ""}`;
+              localProto = r.protocol || "";
             }
             if (r.id === remoteId) {
               remoteType = r.candidateType || "unknown";
               remoteAddr = `${r.address || r.ip || ""}:${r.port || ""}`;
+              remoteProto = r.protocol || "";
             }
           });
-          pushDebugLog(`[ICE] ${role} pair: local=${localType}(${localAddr}) remote=${remoteType}(${remoteAddr})`);
+          pushDebugLog(`[ICE] ${role} CONNECTED pair: local=${localType}(${localAddr},${localProto}) remote=${remoteType}(${remoteAddr},${remoteProto})`);
         }
       });
+
+      // Also log all failed candidate pairs for diagnosis
+      const failedPairs: string[] = [];
+      stats.forEach((report) => {
+        if (report.type === "candidate-pair" && report.state === "failed") {
+          failedPairs.push(`${report.localCandidateId}<->${report.remoteCandidateId}`);
+        }
+      });
+      if (failedPairs.length > 0) {
+        pushDebugLog(`[ICE] ${role} failed pairs: ${failedPairs.length}`);
+      }
+    });
+  } catch (e) {
+    // Ignore stats errors
+  }
+}
+
+/**
+ * Log detailed ICE failure diagnosis when connection fails.
+ * Call this when connectionState becomes "failed".
+ */
+export function logICEFailureDiagnosis(pc: RTCPeerConnection, role: string): void {
+  try {
+    pc.getStats().then((stats) => {
+      const localCandidates: string[] = [];
+      const remoteCandidates: string[] = [];
+      let checkedPairs = 0;
+      let failedPairs = 0;
+
+      stats.forEach((report) => {
+        if (report.type === "local-candidate") {
+          localCandidates.push(`${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`);
+        }
+        if (report.type === "remote-candidate") {
+          remoteCandidates.push(`${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`);
+        }
+        if (report.type === "candidate-pair") {
+          checkedPairs++;
+          if (report.state === "failed") failedPairs++;
+        }
+      });
+
+      pushDebugLog(`[ICE-DIAG] ${role} FAILURE ANALYSIS:`);
+      pushDebugLog(`[ICE-DIAG] Local candidates (${localCandidates.length}): ${localCandidates.join(", ") || "NONE"}`);
+      pushDebugLog(`[ICE-DIAG] Remote candidates (${remoteCandidates.length}): ${remoteCandidates.join(", ") || "NONE"}`);
+      pushDebugLog(`[ICE-DIAG] Pairs checked=${checkedPairs} failed=${failedPairs}`);
+
+      // Diagnosis logic
+      if (localCandidates.length === 0) {
+        pushDebugLog(`[ICE-DIAG] CAUSE: No local candidates gathered — network interface issue or browser restriction`);
+      } else if (remoteCandidates.length === 0) {
+        pushDebugLog(`[ICE-DIAG] CAUSE: No remote candidates received — signaling issue or peer not responding`);
+      } else if (localCandidates.every(c => c.startsWith("host")) && remoteCandidates.every(c => c.startsWith("host"))) {
+        pushDebugLog(`[ICE-DIAG] CAUSE: Both sides only have host candidates (no srflx) — STUN server unreachable or blocked`);
+        pushDebugLog(`[ICE-DIAG] Both have LAN IPs but cannot connect — likely AP ISOLATION or firewall blocking LAN UDP`);
+      } else if (localCandidates.some(c => c.startsWith("host")) && remoteCandidates.some(c => c.startsWith("host"))) {
+        const hasLocalSrflx = localCandidates.some(c => c.startsWith("srflx"));
+        const hasRemoteSrflx = remoteCandidates.some(c => c.startsWith("srflx"));
+        if (hasLocalSrflx || hasRemoteSrflx) {
+          pushDebugLog(`[ICE-DIAG] CAUSE: Have srflx candidates but still failed — likely symmetric NAT or restrictive firewall`);
+        } else {
+          pushDebugLog(`[ICE-DIAG] CAUSE: Host candidates exist but connection failed — AP ISOLATION most likely (router blocks device-to-device traffic)`);
+        }
+      }
     });
   } catch (e) {
     // Ignore stats errors
