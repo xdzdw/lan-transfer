@@ -43,7 +43,7 @@ function useDebugLogs() {
 }
 
 export function DebugPanel() {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   const [copied, setCopied] = useState(false);
   const logs = useDebugLogs();
   const scrollRef = useRef<HTMLDivElement>(null);
