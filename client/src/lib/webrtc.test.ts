@@ -230,8 +230,8 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
 
       expect(onFail).not.toHaveBeenCalled();
 
-      // Advance past the 6s timeout
-      await vi.advanceTimersByTimeAsync(6000);
+      // Advance past the 8s timeout (RTC_TIMEOUT_MS = 8000)
+      await vi.advanceTimersByTimeAsync(8000);
 
       expect(onFail).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");
@@ -261,7 +261,7 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
       transport.close();
     });
 
-    it("should call onClose when DataChannel closes after P2P was established", async () => {
+    it("should call onClose when DataChannel closes AND connection state is failed", async () => {
       const onClose = vi.fn();
       const transport = createHostRTC(mockWs, vi.fn(), vi.fn(), onClose, vi.fn());
 
@@ -271,6 +271,9 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
       dc._simulateOpen();
       expect(transport.mode).toBe("p2p");
 
+      // DataChannel close alone should NOT trigger onClose (new behavior)
+      // The connection state must also be failed/closed
+      latestPC.connectionState = "failed";
       dc._simulateClose();
       expect(onClose).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");
@@ -379,14 +382,15 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(onFail).not.toHaveBeenCalled();
 
-      await vi.advanceTimersByTimeAsync(6000);
+      // Advance past the 8s timeout (RTC_TIMEOUT_MS = 8000)
+      await vi.advanceTimersByTimeAsync(8000);
       expect(onFail).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");
 
       transport.close();
     });
 
-    it("should call onClose when DataChannel closes after P2P established", async () => {
+    it("should call onClose when DataChannel closes AND connection state is failed", async () => {
       const onClose = vi.fn();
       const transport = createClientRTC(mockWs, fakeOffer, vi.fn(), vi.fn(), onClose, vi.fn());
 
@@ -398,6 +402,9 @@ describe("webrtc.ts — WebRTC Transport Layer", () => {
 
       expect(transport.mode).toBe("p2p");
 
+      // DataChannel close alone should NOT trigger onClose (new behavior)
+      // The connection state must also be failed/closed
+      latestPC.connectionState = "failed";
       dc._simulateClose();
       expect(onClose).toHaveBeenCalledOnce();
       expect(transport.mode).toBe("relay");

@@ -54,7 +54,7 @@ interface FileSendState {
   completed: boolean;
 }
 
-const CHUNK_SIZE = 64 * 1024;
+const CHUNK_SIZE = 256 * 1024; // 256KB — larger chunks for better P2P throughput
 const HEADER_SIZE = 40; // 36-byte UUID + 4-byte chunk index
 
 function getWsUrl(): string {
@@ -221,6 +221,12 @@ export function usePeerClient() {
 
   /** Handle WebRTC offer from host — create answer and establish P2P */
   const handleRTCOffer = useCallback((ws: WebSocket, offer: RTCSessionDescriptionInit) => {
+    // Close any existing RTC connection before creating a new one
+    if (rtcRef.current) {
+      console.log("[Client] Closing existing RTC before handling new offer...");
+      rtcRef.current.close();
+      rtcRef.current = null;
+    }
     console.log("[Client] Received WebRTC offer, creating answer...");
     setTransportMode("upgrading");
 
@@ -305,13 +311,14 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait if buffer is full
+      // Back-pressure: allow up to 4MB buffered for P2P, 1MB for relay
+      const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
+      const maxBuffer = isP2P ? 4 * 1024 * 1024 : 1024 * 1024;
       let waitCount = 0;
-      while (getTransportBufferedAmount(rtcRef.current, ws) > 1024 * 1024) {
-        await new Promise(resolve => setTimeout(resolve, 50));
+      while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
+        await new Promise(resolve => setTimeout(resolve, 20));
         waitCount++;
-        if (waitCount > 200 || abortController.signal.aborted) {
-          // If we waited too long or aborted, stop
+        if (waitCount > 500 || abortController.signal.aborted) {
           if (abortController.signal.aborted) return;
           break;
         }
@@ -362,8 +369,13 @@ export function usePeerClient() {
 
         // WebRTC signaling messages
         case "rtc-offer":
+          // Only handle new offer if we don't already have an active P2P connection
           if (wsRef.current && msg.sdp) {
-            handleRTCOffer(wsRef.current, msg.sdp);
+            if (!rtcRef.current || rtcRef.current.dataChannel?.readyState !== "open") {
+              handleRTCOffer(wsRef.current, msg.sdp);
+            } else {
+              console.log("[Client] Ignoring rtc-offer — DataChannel already open");
+            }
           }
           break;
 
@@ -389,13 +401,15 @@ export function usePeerClient() {
               rtcRef.current = null;
             }
           } else {
-            // Host temporarily disconnected, wait for reconnection
-            console.log("[Client] Host temporarily disconnected, waiting for reconnection...");
-            setTransportMode("relay");
-            if (rtcRef.current) {
-              rtcRef.current.close();
-              rtcRef.current = null;
+            // Host's signaling WebSocket temporarily disconnected
+            // BUT the WebRTC DataChannel may still be working (it's independent!)
+            console.log("[Client] Host signaling temporarily disconnected");
+            if (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open") {
+              setTransportMode("relay");
+            } else {
+              console.log("[Client] DataChannel still open — keeping P2P mode");
             }
+            // Do NOT close RTC — it may still be working fine over LAN
           }
           break;
 
@@ -531,8 +545,9 @@ export function usePeerClient() {
 
         // Auto-reconnect if we were previously connected and didn't intentionally close
         if (!intentionalCloseRef.current && wasConnectedRef.current) {
-          // Abort any active file send
-          if (activeSendAbortRef.current) {
+          // Only abort file sends if DataChannel is NOT available
+          // If P2P is still working, the file can continue sending via DataChannel
+          if (activeSendAbortRef.current && (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open")) {
             activeSendAbortRef.current.abort();
             activeSendAbortRef.current = null;
           }
@@ -630,12 +645,14 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure
+      // Back-pressure: allow up to 4MB buffered for P2P, 1MB for relay
+      const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
+      const maxBuffer = isP2P ? 4 * 1024 * 1024 : 1024 * 1024;
       let waitCount = 0;
-      while (getTransportBufferedAmount(rtcRef.current, ws) > 1024 * 1024) {
-        await new Promise(resolve => setTimeout(resolve, 50));
+      while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
+        await new Promise(resolve => setTimeout(resolve, 20));
         waitCount++;
-        if (waitCount > 200 || abortController.signal.aborted) {
+        if (waitCount > 500 || abortController.signal.aborted) {
           if (abortController.signal.aborted) return;
           break;
         }

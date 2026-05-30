@@ -6,23 +6,23 @@
  * 2. SDP offer/answer exchange via WebSocket signaling
  * 3. ICE candidate exchange via WebSocket signaling
  * 4. DataChannel creation and management
- * 5. Connection state monitoring
+ * 5. Connection state monitoring with stability (no premature fallback)
  * 
- * Usage:
- * - Host creates offer, client creates answer
- * - Both sides exchange ICE candidates through WebSocket
- * - Once DataChannel is open, data flows P2P (fast on LAN)
- * - If WebRTC fails within timeout, caller falls back to WebSocket relay
+ * Key stability improvements:
+ * - "disconnected" state is TEMPORARY — we wait before falling back
+ * - Only "failed" triggers immediate fallback
+ * - Once P2P is established, we don't flip back to relay on transient issues
+ * - sendViaTransport locks to a channel for the duration of a transfer
  */
 
 // Public STUN servers for NAT traversal
 const ICE_SERVERS: RTCIceServer[] = [
   { urls: "stun:stun.l.google.com:19302" },
   { urls: "stun:stun1.l.google.com:19302" },
-  { urls: "stun:stun2.l.google.com:19302" },
 ];
 
-const RTC_TIMEOUT_MS = 6000; // 6 seconds to establish WebRTC
+const RTC_TIMEOUT_MS = 8000; // 8 seconds to establish WebRTC (increased from 6)
+const DISCONNECT_GRACE_MS = 10000; // 10 seconds grace period for "disconnected" state
 
 export type TransportMode = "p2p" | "relay" | "upgrading";
 
@@ -33,6 +33,8 @@ export interface WebRTCTransport {
   dataChannel: RTCDataChannel | null;
   /** Current transport mode */
   mode: TransportMode;
+  /** Whether P2P was ever successfully established (sticky) */
+  wasP2P: boolean;
   /** Close and clean up */
   close: () => void;
 }
@@ -40,20 +42,11 @@ export interface WebRTCTransport {
 /**
  * Create a WebRTC connection as the host (offerer).
  * 
- * Flow:
- * 1. Create RTCPeerConnection
- * 2. Create DataChannel
- * 3. Create SDP offer → send via WebSocket
- * 4. Receive SDP answer from client via WebSocket
- * 5. Exchange ICE candidates via WebSocket
- * 6. DataChannel opens → P2P ready
- * 
  * @param ws - WebSocket for signaling
  * @param onOpen - Called when DataChannel is ready
  * @param onMessage - Called when data arrives on DataChannel
- * @param onClose - Called when DataChannel/connection closes
+ * @param onClose - Called when DataChannel/connection is permanently lost
  * @param onFail - Called when WebRTC setup fails (timeout or error)
- * @returns WebRTCTransport object
  */
 export function createHostRTC(
   ws: WebSocket,
@@ -63,9 +56,10 @@ export function createHostRTC(
   onFail: () => void,
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", close: () => {} };
+  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {} };
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout>;
+  let disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
 
   // Create DataChannel (host is the offerer, so host creates the channel)
   const dc = pc.createDataChannel("transfer", {
@@ -76,10 +70,15 @@ export function createHostRTC(
   transport.dataChannel = dc;
 
   dc.onopen = () => {
-    if (settled) return;
+    if (settled && !transport.wasP2P) return; // Only ignore if never was P2P
     settled = true;
     clearTimeout(timeoutId);
+    if (disconnectTimerId) {
+      clearTimeout(disconnectTimerId);
+      disconnectTimerId = null;
+    }
     transport.mode = "p2p";
+    transport.wasP2P = true;
     console.log("[WebRTC Host] DataChannel open — P2P mode active");
     onOpen();
   };
@@ -88,9 +87,13 @@ export function createHostRTC(
 
   dc.onclose = () => {
     console.log("[WebRTC Host] DataChannel closed");
-    if (transport.mode === "p2p") {
-      transport.mode = "relay";
-      onClose();
+    // Don't immediately switch — the connection state handler will manage fallback
+    // Only trigger onClose if the connection is truly failed (not just temporarily disconnected)
+    if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+      if (transport.mode === "p2p") {
+        transport.mode = "relay";
+        onClose();
+      }
     }
   };
 
@@ -109,8 +112,48 @@ export function createHostRTC(
   };
 
   pc.onconnectionstatechange = () => {
-    console.log("[WebRTC Host] Connection state:", pc.connectionState);
-    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+    const state = pc.connectionState;
+    console.log("[WebRTC Host] Connection state:", state);
+
+    if (state === "connected") {
+      // Clear any pending disconnect timer — connection recovered
+      if (disconnectTimerId) {
+        clearTimeout(disconnectTimerId);
+        disconnectTimerId = null;
+        console.log("[WebRTC Host] Connection recovered from disconnected state");
+      }
+    }
+
+    if (state === "disconnected") {
+      // "disconnected" is TEMPORARY — WiFi jitter, brief network switch, etc.
+      // Start a grace timer; only fall back if it doesn't recover
+      if (!disconnectTimerId && transport.wasP2P) {
+        console.log("[WebRTC Host] Connection temporarily disconnected, waiting for recovery...");
+        disconnectTimerId = setTimeout(() => {
+          disconnectTimerId = null;
+          // Check again — it might have recovered during the grace period
+          if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+            console.log("[WebRTC Host] Connection did not recover — falling back to relay");
+            if (transport.mode === "p2p") {
+              transport.mode = "relay";
+              onClose();
+            }
+          }
+        }, DISCONNECT_GRACE_MS);
+      }
+
+      if (!settled) {
+        // During initial setup, disconnected means it's still trying
+        // Don't fail yet — let the timeout handle it
+      }
+    }
+
+    if (state === "failed") {
+      // "failed" is PERMANENT — ICE failed, no recovery possible
+      if (disconnectTimerId) {
+        clearTimeout(disconnectTimerId);
+        disconnectTimerId = null;
+      }
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
@@ -158,6 +201,10 @@ export function createHostRTC(
   transport.close = () => {
     settled = true;
     clearTimeout(timeoutId);
+    if (disconnectTimerId) {
+      clearTimeout(disconnectTimerId);
+      disconnectTimerId = null;
+    }
     try { dc.close(); } catch {}
     try { pc.close(); } catch {}
   };
@@ -168,21 +215,12 @@ export function createHostRTC(
 /**
  * Create a WebRTC connection as the client (answerer).
  * 
- * Flow:
- * 1. Receive SDP offer from host via WebSocket
- * 2. Create RTCPeerConnection
- * 3. Set remote description (offer)
- * 4. Create SDP answer → send via WebSocket
- * 5. Exchange ICE candidates via WebSocket
- * 6. DataChannel arrives via ondatachannel → P2P ready
- * 
  * @param ws - WebSocket for signaling
  * @param offer - SDP offer from host
  * @param onOpen - Called when DataChannel is ready
  * @param onMessage - Called when data arrives on DataChannel
- * @param onClose - Called when DataChannel/connection closes
+ * @param onClose - Called when DataChannel/connection is permanently lost
  * @param onFail - Called when WebRTC setup fails (timeout or error)
- * @returns WebRTCTransport object
  */
 export function createClientRTC(
   ws: WebSocket,
@@ -193,9 +231,10 @@ export function createClientRTC(
   onFail: () => void,
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", close: () => {} };
+  let transport: WebRTCTransport = { pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {} };
   let settled = false;
   let timeoutId: ReturnType<typeof setTimeout>;
+  let disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
 
   // Client receives DataChannel from host
   pc.ondatachannel = (event) => {
@@ -204,10 +243,15 @@ export function createClientRTC(
     transport.dataChannel = dc;
 
     dc.onopen = () => {
-      if (settled) return;
+      if (settled && !transport.wasP2P) return;
       settled = true;
       clearTimeout(timeoutId);
+      if (disconnectTimerId) {
+        clearTimeout(disconnectTimerId);
+        disconnectTimerId = null;
+      }
       transport.mode = "p2p";
+      transport.wasP2P = true;
       console.log("[WebRTC Client] DataChannel open — P2P mode active");
       onOpen();
     };
@@ -216,9 +260,11 @@ export function createClientRTC(
 
     dc.onclose = () => {
       console.log("[WebRTC Client] DataChannel closed");
-      if (transport.mode === "p2p") {
-        transport.mode = "relay";
-        onClose();
+      if (pc.connectionState === "failed" || pc.connectionState === "closed") {
+        if (transport.mode === "p2p") {
+          transport.mode = "relay";
+          onClose();
+        }
       }
     };
 
@@ -238,8 +284,38 @@ export function createClientRTC(
   };
 
   pc.onconnectionstatechange = () => {
-    console.log("[WebRTC Client] Connection state:", pc.connectionState);
-    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+    const state = pc.connectionState;
+    console.log("[WebRTC Client] Connection state:", state);
+
+    if (state === "connected") {
+      if (disconnectTimerId) {
+        clearTimeout(disconnectTimerId);
+        disconnectTimerId = null;
+        console.log("[WebRTC Client] Connection recovered from disconnected state");
+      }
+    }
+
+    if (state === "disconnected") {
+      if (!disconnectTimerId && transport.wasP2P) {
+        console.log("[WebRTC Client] Connection temporarily disconnected, waiting for recovery...");
+        disconnectTimerId = setTimeout(() => {
+          disconnectTimerId = null;
+          if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
+            console.log("[WebRTC Client] Connection did not recover — falling back to relay");
+            if (transport.mode === "p2p") {
+              transport.mode = "relay";
+              onClose();
+            }
+          }
+        }, DISCONNECT_GRACE_MS);
+      }
+    }
+
+    if (state === "failed") {
+      if (disconnectTimerId) {
+        clearTimeout(disconnectTimerId);
+        disconnectTimerId = null;
+      }
       if (!settled) {
         settled = true;
         clearTimeout(timeoutId);
@@ -288,6 +364,10 @@ export function createClientRTC(
   transport.close = () => {
     settled = true;
     clearTimeout(timeoutId);
+    if (disconnectTimerId) {
+      clearTimeout(disconnectTimerId);
+      disconnectTimerId = null;
+    }
     try {
       if (transport.dataChannel) transport.dataChannel.close();
     } catch {}
@@ -324,6 +404,9 @@ export function handleRTCSignaling(
  * Send data through the best available channel.
  * Prefers DataChannel (P2P) if open, falls back to WebSocket (relay).
  * 
+ * IMPORTANT: This function checks readyState directly, not the transport.mode flag.
+ * This prevents issues where mode flag lags behind actual channel state.
+ * 
  * @returns "p2p" if sent via DataChannel, "relay" if sent via WebSocket
  */
 export function sendViaTransport(
@@ -331,11 +414,10 @@ export function sendViaTransport(
   ws: WebSocket | null,
   data: string | ArrayBuffer,
 ): TransportMode {
-  // Try DataChannel first
+  // Try DataChannel first — check actual readyState, not just mode flag
   if (
     transport?.dataChannel &&
-    transport.dataChannel.readyState === "open" &&
-    transport.mode === "p2p"
+    transport.dataChannel.readyState === "open"
   ) {
     try {
       transport.dataChannel.send(data as any);
@@ -364,8 +446,7 @@ export function getTransportBufferedAmount(
 ): number {
   if (
     transport?.dataChannel &&
-    transport.dataChannel.readyState === "open" &&
-    transport.mode === "p2p"
+    transport.dataChannel.readyState === "open"
   ) {
     return transport.dataChannel.bufferedAmount;
   }
