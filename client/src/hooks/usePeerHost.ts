@@ -155,8 +155,13 @@ export function usePeerHost() {
     const entry = fileChunksRef.current.get(fileId);
     if (!entry) return;
 
-    entry.chunks.set(chunkIndex, chunkData);
-    entry.received += chunkData.byteLength;
+    // Dedup: only count bytes for new chunks (relay resend may send duplicates)
+    if (!entry.chunks.has(chunkIndex)) {
+      entry.chunks.set(chunkIndex, chunkData);
+      entry.received += chunkData.byteLength;
+    } else {
+      entry.chunks.set(chunkIndex, chunkData);
+    }
     const progress = Math.min(99, Math.round((entry.received / entry.meta.size) * 100));
     updateItem(fileId, { progress, status: "transferring" });
 
@@ -322,6 +327,11 @@ export function usePeerHost() {
     const resumeStartTime = Date.now();
     let lastLoggedProgress = 0;
 
+    // Track chunks sent via P2P that might be lost if DC crashes
+    const p2pSentChunks: number[] = [];
+    let dcWasOpen = rtcRef.current?.dataChannel?.readyState === "open";
+    let dcCrashDetected = false;
+
     for (let i = startChunk; i < totalChunks; i++) {
       if (abortController.signal.aborted) {
         pushDebugLog(`[RESUME] Paused again at chunk ${i}/${totalChunks}`);
@@ -363,6 +373,17 @@ export function usePeerHost() {
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
 
+      // Track P2P-sent chunks for potential resend
+      if (actualMode === "p2p") {
+        p2pSentChunks.push(i);
+      }
+
+      // Detect DC crash: was open, now closed
+      if (dcWasOpen && rtcRef.current?.dataChannel?.readyState !== "open" && !dcCrashDetected) {
+        dcCrashDetected = true;
+        pushDebugLog(`[RESUME-P2P-CRASH] DataChannel crashed, will resend ${p2pSentChunks.length} chunks via relay`);
+      }
+
       // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
       if (dcOpen && i % 4 === 3) {
         await new Promise(resolve => setTimeout(resolve, 0));
@@ -379,6 +400,31 @@ export function usePeerHost() {
         pushDebugLog(`[RESUME] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`);
         lastLoggedProgress = progress;
       }
+    }
+
+    // If DC crashed, resend the chunks that were sent via P2P (they may have been lost)
+    if (dcCrashDetected && p2pSentChunks.length > 0 && ws?.readyState === WebSocket.OPEN) {
+      pushDebugLog(`[RESUME-RESEND] Resending ${p2pSentChunks.length} chunks via relay`);
+      for (const chunkIdx of p2pSentChunks) {
+        if (abortController.signal.aborted) return;
+        const start = chunkIdx * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = buffer.slice(start, end);
+
+        const idBytes = new TextEncoder().encode(id);
+        const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
+        const view = new Uint8Array(combined);
+        view.set(idBytes, 0);
+        const indexView = new DataView(combined, 36, 4);
+        indexView.setUint32(0, chunkIdx, false);
+        view.set(new Uint8Array(chunk), HEADER_SIZE);
+
+        while (getTransportBufferedAmount(null, ws) > 512 * 1024) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        sendViaTransport(null, ws, combined);
+      }
+      pushDebugLog(`[RESUME-RESEND] Done resending ${p2pSentChunks.length} chunks`);
     }
 
     const completeStr = JSON.stringify({ type: "file-complete", id });
@@ -662,6 +708,11 @@ export function usePeerHost() {
     const sendStartTime = Date.now();
     let lastLoggedProgress = 0;
 
+    // Track chunks sent via P2P that might be lost if DC crashes
+    const p2pSentChunks: number[] = [];
+    let dcWasOpen = rtcRef.current?.dataChannel?.readyState === "open";
+    let dcCrashDetected = false;
+
     for (let i = 0; i < totalChunks; i++) {
       if (abortController.signal.aborted) {
         pushDebugLog(`[SEND] Paused at chunk ${i}/${totalChunks}, will resume`);
@@ -705,6 +756,17 @@ export function usePeerHost() {
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
 
+      // Track P2P-sent chunks for potential resend
+      if (actualMode === "p2p") {
+        p2pSentChunks.push(i);
+      }
+
+      // Detect DC crash: was open, now closed
+      if (dcWasOpen && rtcRef.current?.dataChannel?.readyState !== "open" && !dcCrashDetected) {
+        dcCrashDetected = true;
+        pushDebugLog(`[P2P-CRASH] DataChannel crashed after sending ${p2pSentChunks.length} chunks via P2P. Will resend via relay after main loop.`);
+      }
+
       // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
       // This gives the browser time to flush data and update bufferedAmount
       if (dcOpen && i % 4 === 3) {
@@ -723,6 +785,32 @@ export function usePeerHost() {
         pushDebugLog(`[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`);
         lastLoggedProgress = progress;
       }
+    }
+
+    // If DC crashed, resend the chunks that were sent via P2P (they may have been lost)
+    if (dcCrashDetected && p2pSentChunks.length > 0 && ws?.readyState === WebSocket.OPEN) {
+      pushDebugLog(`[RESEND] Resending ${p2pSentChunks.length} chunks via relay (originally sent via P2P before crash)`);
+      for (const chunkIdx of p2pSentChunks) {
+        if (abortController.signal.aborted) return;
+        const start = chunkIdx * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = buffer.slice(start, end);
+
+        const idBytes = new TextEncoder().encode(id);
+        const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
+        const view = new Uint8Array(combined);
+        view.set(idBytes, 0);
+        const indexView = new DataView(combined, 36, 4);
+        indexView.setUint32(0, chunkIdx, false);
+        view.set(new Uint8Array(chunk), HEADER_SIZE);
+
+        // Back-pressure for relay resend
+        while (getTransportBufferedAmount(null, ws) > 512 * 1024) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        sendViaTransport(null, ws, combined); // Force relay (pass null for rtc)
+      }
+      pushDebugLog(`[RESEND] Done resending ${p2pSentChunks.length} chunks via relay`);
     }
 
     // Send completion signal
