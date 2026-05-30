@@ -163,6 +163,11 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
         {item.status === "done" && !isReceived && (
           <Check className="size-3.5 text-primary/60" />
         )}
+        {item.status === "error" && (
+          <span title="Transfer failed">
+            <AlertTriangle className="size-3.5 text-destructive" />
+          </span>
+        )}
       </div>
     </div>
   );
