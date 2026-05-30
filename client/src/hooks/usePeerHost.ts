@@ -340,13 +340,13 @@ export function usePeerHost() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait until buffer drains, no hard limit
+      // Back-pressure: wait until buffer drains before sending
       const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024;
+      const maxBuffer = dcOpen ? 1 * 1024 * 1024 : 512 * 1024; // 1MB for P2P, 512KB for relay
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30));
+        await new Promise(resolve => setTimeout(resolve, 5));
         bpWaits++;
         const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
         const wsOpen = ws?.readyState === WebSocket.OPEN;
@@ -362,6 +362,11 @@ export function usePeerHost() {
 
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
+
+      // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
+      if (dcOpen && i % 4 === 3) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
@@ -675,13 +680,14 @@ export function usePeerHost() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait until buffer drains, no hard limit
+      // Back-pressure: wait until buffer drains before sending
+      // CRITICAL: Must yield event loop to let browser update bufferedAmount
       const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024; // 4MB for P2P, 512KB for relay
+      const maxBuffer = dcOpen ? 1 * 1024 * 1024 : 512 * 1024; // 1MB for P2P (prevent DC crash), 512KB for relay
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30)); // Faster polling for P2P
+        await new Promise(resolve => setTimeout(resolve, 5)); // Short yield for P2P
         bpWaits++;
         // Check if both transports are dead
         const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
@@ -698,6 +704,12 @@ export function usePeerHost() {
 
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
+
+      // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
+      // This gives the browser time to flush data and update bufferedAmount
+      if (dcOpen && i % 4 === 3) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });

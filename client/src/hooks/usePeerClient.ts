@@ -96,14 +96,25 @@ export function usePeerClient() {
 
   const assembleFile = useCallback((fileId: string) => {
     const entry = fileChunksRef.current.get(fileId);
-    if (!entry) return;
-    if (entry.received < entry.meta.size) return;
+    if (!entry) {
+      pushDebugLog(`[RECV] assembleFile: no entry for ${fileId.slice(0, 8)}`);
+      return;
+    }
+    if (entry.received < entry.meta.size) {
+      // Not all bytes received yet — find missing chunks
+      const missingChunks: number[] = [];
+      for (let i = 0; i < entry.meta.totalChunks; i++) {
+        if (!entry.chunks.has(i)) missingChunks.push(i);
+      }
+      pushDebugLog(`[RECV] assembleFile: incomplete ${entry.received}/${entry.meta.size} bytes, ${entry.chunks.size}/${entry.meta.totalChunks} chunks, missing=[${missingChunks.slice(0, 10).join(",")}${missingChunks.length > 10 ? "..." : ""}]`);
+      return;
+    }
 
     const orderedChunks: ArrayBuffer[] = [];
     for (let i = 0; i < entry.meta.totalChunks; i++) {
       const chunk = entry.chunks.get(i);
       if (!chunk) {
-        console.error(`[Client] Missing chunk ${i} for file ${fileId}`);
+        pushDebugLog(`[RECV-ERR] Missing chunk ${i}/${entry.meta.totalChunks} despite received=${entry.received}`);
         updateItem(fileId, { status: "error", progress: 0 });
         fileChunksRef.current.delete(fileId);
         return;
@@ -113,15 +124,19 @@ export function usePeerClient() {
 
     const blob = new Blob(orderedChunks, { type: entry.meta.mimeType || "application/octet-stream" });
     if (blob.size !== entry.meta.size) {
-      console.error(`[Client] File size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
+      pushDebugLog(`[RECV-ERR] Size mismatch: expected ${entry.meta.size}, got ${blob.size}`);
       updateItem(fileId, { status: "error", progress: 0 });
       fileChunksRef.current.delete(fileId);
       return;
     }
 
+    pushDebugLog(`[RECV] DONE: ${entry.meta.name} (${(entry.meta.size / 1024 / 1024).toFixed(1)}MB, ${entry.meta.totalChunks} chunks)`);
     updateItem(fileId, { progress: 100, status: "done", blob });
     fileChunksRef.current.delete(fileId);
   }, [updateItem]);
+
+  // Track last logged receive progress per file to avoid log spam
+  const recvLogProgressRef = useRef<Map<string, number>>(new Map());
 
   const processBinaryChunk = useCallback((buffer: ArrayBuffer) => {
     if (buffer.byteLength < HEADER_SIZE) return;
@@ -135,12 +150,22 @@ export function usePeerClient() {
     const chunkData = buffer.slice(HEADER_SIZE);
 
     const entry = fileChunksRef.current.get(fileId);
-    if (!entry) return;
+    if (!entry) {
+      pushDebugLog(`[RECV-WARN] Chunk for unknown file ${fileId.slice(0, 8)}, idx=${chunkIndex}`);
+      return;
+    }
 
     entry.chunks.set(chunkIndex, chunkData);
     entry.received += chunkData.byteLength;
     const progress = Math.min(99, Math.round((entry.received / entry.meta.size) * 100));
     updateItem(fileId, { progress, status: "transferring" });
+
+    // Log every 10% progress
+    const lastLogged = recvLogProgressRef.current.get(fileId) || 0;
+    if (progress >= lastLogged + 10) {
+      pushDebugLog(`[RECV] ${progress}% | ${entry.chunks.size}/${entry.meta.totalChunks} chunks | ${(entry.received / 1024 / 1024).toFixed(1)}MB/${(entry.meta.size / 1024 / 1024).toFixed(1)}MB`);
+      recvLogProgressRef.current.set(fileId, progress);
+    }
 
     if (entry.pendingComplete && entry.received >= entry.meta.size) {
       assembleFile(fileId);
@@ -211,9 +236,12 @@ export function usePeerClient() {
           const entry = fileChunksRef.current.get(msg.id);
           if (entry) {
             entry.pendingComplete = true;
+            pushDebugLog(`[RECV] file-complete signal received, have ${entry.chunks.size}/${entry.meta.totalChunks} chunks (${(entry.received / 1024 / 1024).toFixed(1)}MB/${(entry.meta.size / 1024 / 1024).toFixed(1)}MB)`);
             binaryQueueRef.current = binaryQueueRef.current.then(() => {
               assembleFile(msg.id);
             });
+          } else {
+            pushDebugLog(`[RECV-WARN] file-complete for unknown file ${msg.id?.slice(0, 8)}`);
           }
           break;
         }
@@ -319,13 +347,13 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait until buffer drains, no hard limit
+      // Back-pressure: wait until buffer drains before sending
       const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024;
+      const maxBuffer = dcOpen ? 1 * 1024 * 1024 : 512 * 1024; // 1MB for P2P, 512KB for relay
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30));
+        await new Promise(resolve => setTimeout(resolve, 5));
         bpWaits++;
         const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
         const wsOpen = ws?.readyState === WebSocket.OPEN;
@@ -341,6 +369,11 @@ export function usePeerClient() {
 
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
+
+      // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
+      if (dcOpen && i % 4 === 3) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
@@ -671,13 +704,13 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: wait until buffer drains, no hard limit
+      // Back-pressure: wait until buffer drains before sending
       const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = dcOpen ? 4 * 1024 * 1024 : 512 * 1024; // 4MB for P2P, 512KB for relay
+      const maxBuffer = dcOpen ? 1 * 1024 * 1024 : 512 * 1024; // 1MB for P2P (prevent DC crash), 512KB for relay
       let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
         if (abortController.signal.aborted) return;
-        await new Promise(resolve => setTimeout(resolve, dcOpen ? 10 : 30)); // Faster polling for P2P
+        await new Promise(resolve => setTimeout(resolve, 5));
         bpWaits++;
         // Check if both transports are dead
         const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
@@ -694,6 +727,11 @@ export function usePeerClient() {
 
       const actualMode = sendViaTransport(rtcRef.current, ws, combined);
       sendState.lastSentChunk = i;
+
+      // Yield event loop every 4 chunks to prevent DataChannel buffer overflow
+      if (dcOpen && i % 4 === 3) {
+        await new Promise(resolve => setTimeout(resolve, 0));
+      }
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
