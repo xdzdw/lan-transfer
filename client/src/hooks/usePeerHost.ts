@@ -70,6 +70,10 @@ interface FileSendState {
 const CHUNK_SIZE = 256 * 1024; // 256KB — larger chunks for better P2P throughput
 const HEADER_SIZE = 40; // 36-byte UUID + 4-byte chunk index
 
+// === TEMPORARY TEST FLAG: set to true to disable WebRTC and force relay-only mode ===
+const FORCE_RELAY_MODE = false;
+// === END TEMPORARY TEST FLAG ===
+
 function getWsUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/api/ws-signaling`;
@@ -239,6 +243,12 @@ export function usePeerHost() {
 
   /** Initiate WebRTC P2P upgrade after WebSocket connection established */
   const initiateWebRTC = useCallback((ws: WebSocket) => {
+    // TEMPORARY: Skip WebRTC when testing relay-only mode
+    if (FORCE_RELAY_MODE) {
+      pushDebugLog("[P2P] FORCE_RELAY_MODE=true, skipping WebRTC");
+      setTransportMode("relay");
+      return;
+    }
     // Close any existing RTC connection before creating a new one
     if (rtcRef.current) {
       console.log("[Host] Closing existing RTC before re-initiating...");
