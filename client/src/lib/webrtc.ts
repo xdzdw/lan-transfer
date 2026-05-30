@@ -22,12 +22,12 @@ import { pushDebugLog } from "@/components/DebugPanel";
 // TURN is critical: browsers use mDNS for host candidates (privacy),
 // which cannot be resolved cross-device. TURN provides relay candidates
 // that bypass this limitation entirely.
-const ICE_SERVERS: RTCIceServer[] = [
-  // STUN — Google primary
-  { urls: "stun:stun.l.google.com:19302" },
-  { urls: "stun:stun1.l.google.com:19302" },
+//
+// Strategy: Chinese locale → China STUN + Open Relay TURN fallback
+//           English locale → Google STUN + Open Relay TURN fallback
+
+const TURN_SERVERS: RTCIceServer[] = [
   // TURN — Open Relay Project (free, ports 80/443 bypass firewalls)
-  // Docs: https://www.metered.ca/tools/openrelay/
   {
     urls: "turn:openrelay.metered.ca:80",
     username: "openrelayproject",
@@ -49,6 +49,25 @@ const ICE_SERVERS: RTCIceServer[] = [
     credential: "openrelayproject",
   },
 ];
+
+function getIceServers(): RTCIceServer[] {
+  const lang = localStorage.getItem("qt-lang") || (navigator.language || "");
+  const isChinese = lang === "zh" || lang.startsWith("zh");
+
+  const stunServers: RTCIceServer[] = isChinese
+    ? [
+        // China-accessible STUN servers
+        { urls: "stun:stun.miwifi.com:3478" },
+        { urls: "stun:stun.qq.com:3478" },
+      ]
+    : [
+        // Google STUN (global)
+        { urls: "stun:stun.l.google.com:19302" },
+        { urls: "stun:stun1.l.google.com:19302" },
+      ];
+
+  return [...stunServers, ...TURN_SERVERS];
+}
 
 const RTC_TIMEOUT_MS = 15000; // 15 seconds to establish WebRTC (increased for slow STUN)
 const DISCONNECT_GRACE_MS = 10000; // 10 seconds grace period for "disconnected" state
@@ -88,7 +107,7 @@ export function createHostRTC(
   onClose: () => void,
   onFail: () => void,
 ): WebRTCTransport {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: getIceServers() });
   let transport: WebRTCTransport = {
     pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
     remoteDescriptionSet: false,
@@ -295,7 +314,7 @@ export function createClientRTC(
   onClose: () => void,
   onFail: () => void,
 ): WebRTCTransport {
-  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  const pc = new RTCPeerConnection({ iceServers: getIceServers() });
   let transport: WebRTCTransport = {
     pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
     remoteDescriptionSet: false,
