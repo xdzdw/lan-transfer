@@ -70,7 +70,7 @@ export function createHostRTC(
   });
   dc.binaryType = "arraybuffer";
   // Set bufferedAmountLowThreshold for efficient back-pressure
-  dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
+  dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB — triggers onbufferedamountlow event
   transport.dataChannel = dc;
 
   dc.onopen = () => {
@@ -92,9 +92,9 @@ export function createHostRTC(
   dc.onmessage = onMessage;
 
   dc.onclose = () => {
+    const bufAmt = dc.bufferedAmount;
+    pushDebugLog(`[DC-CLOSE] Host DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`);
     console.log("[WebRTC Host] DataChannel closed");
-    // Don't immediately switch — the connection state handler will manage fallback
-    // Only trigger onClose if the connection is truly failed (not just temporarily disconnected)
     if (pc.connectionState === "failed" || pc.connectionState === "closed") {
       if (transport.mode === "p2p") {
         transport.mode = "relay";
@@ -103,7 +103,11 @@ export function createHostRTC(
     }
   };
 
-  dc.onerror = (e) => {
+  dc.onerror = (e: Event) => {
+    const rtcErr = e as RTCErrorEvent;
+    const errDetail = rtcErr.error ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}` : "unknown";
+    const bufAmt = dc.bufferedAmount;
+    pushDebugLog(`[DC-ERR] Host DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`);
     console.error("[WebRTC Host] DataChannel error:", e);
   };
 
@@ -247,7 +251,7 @@ export function createClientRTC(
     const dc = event.channel;
     dc.binaryType = "arraybuffer";
     // Set bufferedAmountLowThreshold for efficient back-pressure
-    dc.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
+    dc.bufferedAmountLowThreshold = 256 * 1024; // 256KB — triggers onbufferedamountlow event
     transport.dataChannel = dc;
 
     dc.onopen = () => {
@@ -269,6 +273,8 @@ export function createClientRTC(
     dc.onmessage = onMessage;
 
     dc.onclose = () => {
+      const bufAmt = dc.bufferedAmount;
+      pushDebugLog(`[DC-CLOSE] Client DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`);
       console.log("[WebRTC Client] DataChannel closed");
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         if (transport.mode === "p2p") {
@@ -278,7 +284,11 @@ export function createClientRTC(
       }
     };
 
-    dc.onerror = (e) => {
+    dc.onerror = (e: Event) => {
+      const rtcErr = e as RTCErrorEvent;
+      const errDetail = rtcErr.error ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}` : "unknown";
+      const bufAmt = dc.bufferedAmount;
+      pushDebugLog(`[DC-ERR] Client DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`);
       console.error("[WebRTC Client] DataChannel error:", e);
     };
   };
