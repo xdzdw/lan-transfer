@@ -185,22 +185,25 @@ export function usePeerClient() {
 
         case "file-meta": {
           const meta: FileChunkMeta = msg.meta;
-          fileChunksRef.current.set(meta.id, {
-            meta,
-            chunks: new Map(),
-            received: 0,
-            pendingComplete: false,
-          });
-          addItem({
-            id: meta.id,
-            type: "file",
-            direction: "received",
-            name: meta.name,
-            size: meta.size,
-            progress: 0,
-            timestamp: Date.now(),
-            status: "transferring",
-          });
+          // If we already have this file (resume scenario), don't re-add item or reset chunks
+          if (!fileChunksRef.current.has(meta.id)) {
+            fileChunksRef.current.set(meta.id, {
+              meta,
+              chunks: new Map(),
+              received: 0,
+              pendingComplete: false,
+            });
+            addItem({
+              id: meta.id,
+              type: "file",
+              direction: "received",
+              name: meta.name,
+              size: meta.size,
+              progress: 0,
+              timestamp: Date.now(),
+              status: "transferring",
+            });
+          }
           break;
         }
 
@@ -273,13 +276,15 @@ export function usePeerClient() {
     const { id, file, totalChunks, lastSentChunk } = sendState;
     const startChunk = lastSentChunk + 1;
 
+    pushDebugLog(`[RESUME] ${file.name} from chunk ${startChunk}/${totalChunks}`);
+
     if (startChunk >= totalChunks) {
-      // All chunks were sent, just send complete signal
       const completeStr = JSON.stringify({ type: "file-complete", id });
       sendViaTransport(rtcRef.current, ws, completeStr);
       updateItem(id, { progress: 100, status: "done" });
       sendState.completed = true;
       pendingSendsRef.current.delete(id);
+      pushDebugLog(`[RESUME] Already complete, sent file-complete signal`);
       return;
     }
 
@@ -293,11 +298,12 @@ export function usePeerClient() {
     const buffer = await file.arrayBuffer();
     const abortController = new AbortController();
     activeSendAbortRef.current = abortController;
+    const resumeStartTime = Date.now();
+    let lastLoggedProgress = 0;
 
     for (let i = startChunk; i < totalChunks; i++) {
-      // Check if send was aborted (e.g. disconnected again)
       if (abortController.signal.aborted) {
-        console.log(`[Client] File send aborted at chunk ${i}`);
+        pushDebugLog(`[RESUME] Paused again at chunk ${i}/${totalChunks}`);
         return;
       }
 
@@ -313,16 +319,23 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: allow up to 4MB buffered for P2P, 1MB for relay
+      // Back-pressure: wait until buffer drains, no hard limit
       const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = isP2P ? 4 * 1024 * 1024 : 1024 * 1024;
-      let waitCount = 0;
+      const maxBuffer = isP2P ? 2 * 1024 * 1024 : 512 * 1024;
+      let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-        waitCount++;
-        if (waitCount > 500 || abortController.signal.aborted) {
-          if (abortController.signal.aborted) return;
-          break;
+        if (abortController.signal.aborted) return;
+        await new Promise(resolve => setTimeout(resolve, 30));
+        bpWaits++;
+        const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+        const wsOpen = ws?.readyState === WebSocket.OPEN;
+        if (!dcOpen && !wsOpen) {
+          pushDebugLog(`[ERR] Both transports dead at resume chunk ${i}/${totalChunks}`);
+          sendState.lastSentChunk = i - 1;
+          return;
+        }
+        if (bpWaits % 100 === 0) {
+          pushDebugLog(`[WARN] Resume back-pressure wait ${bpWaits} at chunk ${i}`);
         }
       }
 
@@ -331,15 +344,25 @@ export function usePeerClient() {
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
+
+      if (progress >= lastLoggedProgress + 10) {
+        const elapsed = (Date.now() - resumeStartTime) / 1000;
+        const sentBytes = (i - startChunk + 1) * CHUNK_SIZE;
+        const speedMBs = (sentBytes / (1024 * 1024)) / elapsed;
+        pushDebugLog(`[RESUME] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${isP2P ? "P2P" : "relay"}`);
+        lastLoggedProgress = progress;
+      }
     }
 
-    // Send completion signal
     const completeStr = JSON.stringify({ type: "file-complete", id });
     sendViaTransport(rtcRef.current, ws, completeStr);
     updateItem(id, { progress: 100, status: "done" });
     sendState.completed = true;
     pendingSendsRef.current.delete(id);
     activeSendAbortRef.current = null;
+
+    const totalTime = ((Date.now() - resumeStartTime) / 1000).toFixed(1);
+    pushDebugLog(`[RESUME] DONE: ${file.name} | ${totalTime}s`);
   }, [updateItem]);
 
   const handleWsMessage = useCallback((event: MessageEvent) => {
@@ -592,6 +615,9 @@ export function usePeerClient() {
     const ws = wsRef.current;
     const id = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    const fileSizeMB = (file.size / (1024 * 1024)).toFixed(2);
+
+    pushDebugLog(`[SEND] Start: ${file.name} (${fileSizeMB}MB, ${totalChunks} chunks)`);
 
     // Track this send for potential resume
     const sendState: FileSendState = {
@@ -623,11 +649,12 @@ export function usePeerClient() {
     const buffer = await file.arrayBuffer();
     const abortController = new AbortController();
     activeSendAbortRef.current = abortController;
+    const sendStartTime = Date.now();
+    let lastLoggedProgress = 0;
 
     for (let i = 0; i < totalChunks; i++) {
-      // Check if send was aborted (disconnected)
       if (abortController.signal.aborted) {
-        console.log(`[Client] File send paused at chunk ${i}, will resume after reconnect`);
+        pushDebugLog(`[SEND] Paused at chunk ${i}/${totalChunks}, will resume`);
         return;
       }
 
@@ -643,16 +670,24 @@ export function usePeerClient() {
       indexView.setUint32(0, i, false);
       view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-      // Back-pressure: allow up to 4MB buffered for P2P, 1MB for relay
+      // Back-pressure: wait until buffer drains, no hard limit
       const isP2P = rtcRef.current?.dataChannel?.readyState === "open";
-      const maxBuffer = isP2P ? 4 * 1024 * 1024 : 1024 * 1024;
-      let waitCount = 0;
+      const maxBuffer = isP2P ? 2 * 1024 * 1024 : 512 * 1024;
+      let bpWaits = 0;
       while (getTransportBufferedAmount(rtcRef.current, ws) > maxBuffer) {
-        await new Promise(resolve => setTimeout(resolve, 20));
-        waitCount++;
-        if (waitCount > 500 || abortController.signal.aborted) {
-          if (abortController.signal.aborted) return;
-          break;
+        if (abortController.signal.aborted) return;
+        await new Promise(resolve => setTimeout(resolve, 30));
+        bpWaits++;
+        // Check if both transports are dead
+        const dcOpen = rtcRef.current?.dataChannel?.readyState === "open";
+        const wsOpen = ws?.readyState === WebSocket.OPEN;
+        if (!dcOpen && !wsOpen) {
+          pushDebugLog(`[ERR] Both transports dead at chunk ${i}/${totalChunks}`);
+          sendState.lastSentChunk = i - 1;
+          return;
+        }
+        if (bpWaits % 100 === 0) {
+          pushDebugLog(`[WARN] Back-pressure wait ${bpWaits} at chunk ${i}, buf=${(getTransportBufferedAmount(rtcRef.current, ws) / 1024).toFixed(0)}KB`);
         }
       }
 
@@ -661,14 +696,28 @@ export function usePeerClient() {
 
       const progress = Math.min(99, Math.round(((i + 1) / totalChunks) * 100));
       updateItem(id, { progress, status: "transferring" });
+
+      // Log progress every 10%
+      if (progress >= lastLoggedProgress + 10) {
+        const elapsed = (Date.now() - sendStartTime) / 1000;
+        const sentBytes = (i + 1) * CHUNK_SIZE;
+        const speedMBs = (sentBytes / (1024 * 1024)) / elapsed;
+        pushDebugLog(`[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${isP2P ? "P2P" : "relay"}`);
+        lastLoggedProgress = progress;
+      }
     }
 
+    // Send completion signal
     const completeStr = JSON.stringify({ type: "file-complete", id });
     sendViaTransport(rtcRef.current, ws, completeStr);
     updateItem(id, { progress: 100, status: "done" });
     sendState.completed = true;
     pendingSendsRef.current.delete(id);
     activeSendAbortRef.current = null;
+
+    const totalTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
+    const avgSpeed = (file.size / (1024 * 1024)) / ((Date.now() - sendStartTime) / 1000);
+    pushDebugLog(`[SEND] DONE: ${file.name} | ${totalTime}s | avg ${avgSpeed.toFixed(2)} MB/s`);
   }, [addItem, updateItem]);
 
   const disconnect = useCallback(() => {
