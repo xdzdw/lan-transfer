@@ -69,7 +69,7 @@ interface FileSendState {
   completed: boolean;
 }
 
-const CHUNK_SIZE = 256 * 1024; // 256KB — larger chunks for better P2P throughput
+const CHUNK_SIZE = 512 * 1024; // 512KB — larger chunks to reduce overhead and improve throughput
 const HEADER_SIZE = 40; // 36-byte UUID + 4-byte chunk index
 
 // === TEMPORARY TEST FLAG: set to true to disable WebRTC and force relay-only mode ===
