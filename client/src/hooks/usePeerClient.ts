@@ -90,6 +90,39 @@ export function usePeerClient() {
   // Keep sent file references for chunk-request resend (auto-clean after 120s)
   const sentFilesRef = useRef<Map<string, { file: File; totalChunks: number; sentAt: number }>>(new Map());
 
+  // Wake Lock to prevent phone from sleeping during transfer
+  const wakeLockRef = useRef<WakeLockSentinel | null>(null);
+
+  const acquireWakeLock = useCallback(async () => {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLockRef.current = await navigator.wakeLock.request('screen');
+      pushDebugLog('[WAKE] Screen wake lock acquired');
+      // Re-acquire on visibility change (browser releases on tab switch)
+      const handleVisibility = async () => {
+        if (document.visibilityState === 'visible' && wasConnectedRef.current && !intentionalCloseRef.current) {
+          try {
+            wakeLockRef.current = await navigator.wakeLock.request('screen');
+            pushDebugLog('[WAKE] Screen wake lock re-acquired');
+          } catch { /* ignore */ }
+        }
+      };
+      document.addEventListener('visibilitychange', handleVisibility);
+    } catch (err) {
+      pushDebugLog(`[WAKE] Failed to acquire wake lock: ${(err as Error).message}`);
+    }
+  }, []);
+
+  const releaseWakeLock = useCallback(async () => {
+    if (wakeLockRef.current) {
+      try {
+        await wakeLockRef.current.release();
+        wakeLockRef.current = null;
+        pushDebugLog('[WAKE] Screen wake lock released');
+      } catch { /* ignore */ }
+    }
+  }, []);
+
   const addItem = useCallback((item: TransferItem) => {
     setItems(prev => [item, ...prev]);
   }, []);
@@ -526,6 +559,7 @@ export function usePeerClient() {
           setError("");
           wasConnectedRef.current = true;
           reconnectAttemptRef.current = 0;
+          acquireWakeLock();
           if (msg.reconnected) {
             pushDebugLog("[RECONNECT] Resuming pending file sends...");
             resumePendingSends();
@@ -991,6 +1025,7 @@ export function usePeerClient() {
     }
     wsRef.current?.close();
     wsRef.current = null;
+    releaseWakeLock();
     setStatus("idle");
     setItems([]);
     setTransportMode("relay");
@@ -999,7 +1034,7 @@ export function usePeerClient() {
     tokenRef.current = "";
     wasConnectedRef.current = false;
     reconnectAttemptRef.current = 0;
-  }, []);
+  }, [releaseWakeLock]);
 
   return { status, items, error, transportMode, connect, sendText, sendFile, disconnect };
 }
