@@ -726,8 +726,13 @@ export function usePeerHost() {
 
         ws.onclose = () => {
           if (pingRef.current) clearInterval(pingRef.current);
-          console.log("[Host] WebSocket closed during reconnection");
+          pushDebugLog("[WS] Connection closed");
           if (!intentionalCloseRef.current && wasStartedRef.current) {
+            // Abort ALL active send loops so they stop competing for the buffer
+            if (!rtcRef.current?.dataChannel || rtcRef.current.dataChannel.readyState !== "open") {
+              activeSendAbortsRef.current.forEach((ctrl) => ctrl.abort());
+              activeSendAbortsRef.current.clear();
+            }
             attemptReconnect();
           }
         };
