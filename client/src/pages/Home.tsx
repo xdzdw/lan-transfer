@@ -13,6 +13,7 @@ import { LangSwitch } from "@/components/LangSwitch";
 import { useIsMobile } from "@/hooks/useMobile";
 import { usePeerClient } from "@/hooks/usePeerClient";
 import { usePeerHost } from "@/hooks/usePeerHost";
+import { usePageTracking } from "@/hooks/usePageTracking";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import { motion, AnimatePresence } from "framer-motion";
@@ -71,6 +72,7 @@ export default function Home() {
 
   const host = usePeerHost();
   const client = usePeerClient();
+  const { trackTokenEntry, trackHostConnection } = usePageTracking();
 
   // Set document title for SEO
   useEffect(() => {
@@ -98,6 +100,13 @@ export default function Home() {
     }
   }, [mode, client.status]);
 
+  // Track host connection when token is generated
+  useEffect(() => {
+    if (host.token && mode === "host") {
+      trackHostConnection(host.token);
+    }
+  }, [host.token, mode, trackHostConnection]);
+
   const handleTokenInputChange = (index: number, value: string) => {
     const digit = value.replace(/\D/g, "").slice(-1);
     const newToken = [...tokenInput];
@@ -111,6 +120,7 @@ export default function Home() {
     if (digit && index === 3) {
       const fullToken = newToken.join("");
       if (fullToken.length === 4) {
+        trackTokenEntry(fullToken);
         client.connect(fullToken);
       }
     }
@@ -135,6 +145,7 @@ export default function Home() {
       }
       setTokenInput(newToken);
       if (pasted.length === 4) {
+        trackTokenEntry(pasted);
         client.connect(pasted);
       } else {
         inputRefs.current[pasted.length]?.focus();

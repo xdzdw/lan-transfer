@@ -25,4 +25,42 @@ export const users = mysqlTable("users", {
 export type User = typeof users.$inferSelect;
 export type InsertUser = typeof users.$inferInsert;
 
+/**
+ * Page view tracking table
+ * Records every page visit with IP, device type, referrer, and connection activity
+ */
+export const pageViews = mysqlTable("pageViews", {
+  id: int("id").autoincrement().primaryKey(),
+  /** ISO timestamp of the visit */
+  visitedAt: timestamp("visitedAt").defaultNow().notNull(),
+  /** Client IP address (from X-Forwarded-For or request.ip) */
+  ipAddress: varchar("ipAddress", { length: 45 }).notNull(),
+  /** HTTP Referer header */
+  referrer: text("referrer"),
+  /** User-Agent header */
+  userAgent: text("userAgent"),
+  /** Device type: 'desktop', 'tablet', 'mobile' */
+  deviceType: mysqlEnum("deviceType", ["desktop", "tablet", "mobile"]).notNull(),
+  /** Whether this visit involved entering a 4-digit code to connect as client */
+  enteredToken: int("enteredToken").default(0).notNull(), // 0=no, 1=yes
+  /** The token entered (if enteredToken=1), stored for analysis */
+  tokenEntered: varchar("tokenEntered", { length: 4 }),
+  /** Whether this visit involved being connected to by another device (as host) */
+  wasConnectedTo: int("wasConnectedTo").default(0).notNull(), // 0=no, 1=yes
+  /** The token generated for this host session (if wasConnectedTo=1) */
+  hostToken: varchar("hostToken", { length: 4 }),
+  /** Whether file transfer occurred during this session */
+  hadFileTransfer: int("hadFileTransfer").default(0).notNull(), // 0=no, 1=yes
+  /** Total bytes transferred in this session (if hadFileTransfer=1) */
+  bytesTransferred: int("bytesTransferred").default(0).notNull(),
+  /** Session duration in seconds */
+  sessionDurationSeconds: int("sessionDurationSeconds").default(0).notNull(),
+  /** Unique session ID to group related events */
+  sessionId: varchar("sessionId", { length: 64 }).notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type PageView = typeof pageViews.$inferSelect;
+export type InsertPageView = typeof pageViews.$inferInsert;
+
 // TODO: Add your tables here

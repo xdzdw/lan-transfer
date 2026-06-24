@@ -7,11 +7,13 @@ import { ThemeProvider } from "./contexts/ThemeContext";
 import { I18nProvider } from "./contexts/I18nContext";
 import { DebugPanel } from "./components/DebugPanel";
 import Home from "./pages/Home";
+import Analytics from "./pages/Analytics";
 
 function Router() {
   return (
     <Switch>
       <Route path={"/"} component={Home} />
+      <Route path={"/analytics"} component={Analytics} />
       <Route component={NotFound} />
     </Switch>
   );

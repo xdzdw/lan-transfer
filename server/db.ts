@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, and, gte, lte, count } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/mysql2";
-import { InsertUser, users } from "../drizzle/schema";
+import { InsertUser, users, pageViews, InsertPageView } from "../drizzle/schema";
 import { ENV } from './_core/env';
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -87,6 +87,82 @@ export async function getUserByOpenId(openId: string) {
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
 
   return result.length > 0 ? result[0] : undefined;
+}
+
+/**
+ * Record a page view with tracking information
+ */
+export async function recordPageView(data: InsertPageView): Promise<void> {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot record page view: database not available");
+    return;
+  }
+
+  try {
+    await db.insert(pageViews).values(data);
+  } catch (error) {
+    console.error("[Database] Failed to record page view:", error);
+    // Don't throw - page view tracking should not break the app
+  }
+}
+
+/**
+ * Get page view statistics for a time range
+ */
+export async function getPageViewStats(startTime: Date, endTime: Date) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get page view stats: database not available");
+    return null;
+  }
+
+  try {
+    const stats = await db
+      .select()
+      .from(pageViews)
+      .where(
+        and(
+          gte(pageViews.visitedAt, startTime),
+          lte(pageViews.visitedAt, endTime)
+        )
+      );
+    return stats;
+  } catch (error) {
+    console.error("[Database] Failed to get page view stats:", error);
+    return null;
+  }
+}
+
+/**
+ * Get page view count by device type
+ */
+export async function getPageViewsByDeviceType(startTime: Date, endTime: Date) {
+  const db = await getDb();
+  if (!db) {
+    console.warn("[Database] Cannot get device stats: database not available");
+    return null;
+  }
+
+  try {
+    const stats = await db
+      .select({
+        deviceType: pageViews.deviceType,
+        count: count(),
+      })
+      .from(pageViews)
+      .where(
+        and(
+          gte(pageViews.visitedAt, startTime),
+          lte(pageViews.visitedAt, endTime)
+        )
+      )
+      .groupBy(pageViews.deviceType);
+    return stats;
+  } catch (error) {
+    console.error("[Database] Failed to get device stats:", error);
+    return null;
+  }
 }
 
 // TODO: add feature queries here as your schema grows.
