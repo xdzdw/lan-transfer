@@ -125,7 +125,9 @@ export async function recordPageView(data: InsertPageView): Promise<void> {
     }
 
     // Normal insertion for all other IPs
-    await db.insert(pageViews).values(data);
+    // Omit visitCount to let database use default value
+    const { visitCount, ...insertData } = data;
+    await db.insert(pageViews).values(insertData as InsertPageView);
   } catch (error) {
     console.error("[Database] Failed to record page view:", error);
     // Don't throw - page view tracking should not break the app
