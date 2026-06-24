@@ -11,8 +11,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Loader2, Calendar, BarChart3, AlertCircle } from "lucide-react";
 import { format, subDays } from "date-fns";
 import { useLocation } from "wouter";
+import { getLoginUrl } from "@/const";
 
 export default function Analytics() {
+  // All hooks MUST be called at the top level, before any conditional returns
   const { user, loading: authLoading } = useAuth();
   const [, setLocation] = useLocation();
   const [startDate, setStartDate] = useState(
@@ -20,8 +22,73 @@ export default function Analytics() {
   );
   const [endDate, setEndDate] = useState(format(new Date(), "yyyy-MM-dd"));
 
-  // Redirect to home if not admin
-  if (!authLoading && (!user || user.role !== "admin")) {
+  const startTime = new Date(`${startDate}T00:00:00`);
+  const endTime = new Date(`${endDate}T23:59:59`);
+
+  // Call all hooks BEFORE any conditional logic
+  const statsQuery = trpc.analytics.getStats.useQuery(
+    {
+      startTime,
+      endTime,
+    },
+    {
+      enabled: !authLoading && user?.role === "admin",
+    }
+  );
+
+  const deviceStatsQuery = trpc.analytics.getDeviceStats.useQuery(
+    {
+      startTime,
+      endTime,
+    },
+    {
+      enabled: !authLoading && user?.role === "admin",
+    }
+  );
+
+  // NOW we can do conditional returns after all hooks
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin" />
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center p-6">
+        <Card className="w-full max-w-md">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <AlertCircle className="w-5 h-5" />
+              Login Required
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-muted-foreground mb-4">
+              Please log in to access the analytics dashboard.
+            </p>
+            <Button
+              onClick={() => (window.location.href = getLoginUrl())}
+              className="w-full mb-2"
+            >
+              Login
+            </Button>
+            <Button
+              onClick={() => setLocation("/")}
+              variant="outline"
+              className="w-full"
+            >
+              Back to Home
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
+  if (user.role !== "admin") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center p-6">
         <Card className="w-full max-w-md">
@@ -46,27 +113,6 @@ export default function Analytics() {
       </div>
     );
   }
-
-  if (authLoading) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <Loader2 className="w-8 h-8 animate-spin" />
-      </div>
-    );
-  }
-
-  const startTime = new Date(`${startDate}T00:00:00`);
-  const endTime = new Date(`${endDate}T23:59:59`);
-
-  const statsQuery = trpc.analytics.getStats.useQuery({
-    startTime,
-    endTime,
-  });
-
-  const deviceStatsQuery = trpc.analytics.getDeviceStats.useQuery({
-    startTime,
-    endTime,
-  });
 
   const stats = statsQuery.data || [];
   const deviceStats = deviceStatsQuery.data || [];
