@@ -30,48 +30,72 @@ export function usePageTracking() {
   useEffect(() => {
     if (!hasTrackedPageView && sessionIdRef.current) {
       const deviceType = isMobile ? "mobile" : "desktop";
-      
-      recordPageViewMutation.mutate({
-        sessionId: sessionIdRef.current,
-        referrer: document.referrer || undefined,
-        userAgent: navigator.userAgent,
-        deviceType,
-        enteredToken: false,
-        wasConnectedTo: false,
-      });
 
-      setHasTrackedPageView(true);
+      recordPageViewMutation.mutate(
+        {
+          sessionId: sessionIdRef.current,
+          referrer: document.referrer || undefined,
+          userAgent: navigator.userAgent,
+          deviceType,
+          enteredToken: false,
+          wasConnectedTo: false,
+        },
+        {
+          onSuccess: () => {
+            setHasTrackedPageView(true);
+          },
+          onError: (error) => {
+            // Log error but don't break the app
+            console.error("Failed to track page view:", error);
+            setHasTrackedPageView(true); // Still mark as tracked to avoid retries
+          },
+        }
+      );
     }
-  }, [hasTrackedPageView, isMobile, recordPageViewMutation]);
+  }, [hasTrackedPageView, isMobile]);
 
   /**
    * Track when user enters a 4-digit token to connect as client
    */
   const trackTokenEntry = (token: string) => {
-    recordPageViewMutation.mutate({
-      sessionId: sessionIdRef.current,
-      referrer: document.referrer || undefined,
-      userAgent: navigator.userAgent,
-      deviceType: isMobile ? "mobile" : "desktop",
-      enteredToken: true,
-      tokenEntered: token,
-      wasConnectedTo: false,
-    });
+    recordPageViewMutation.mutate(
+      {
+        sessionId: sessionIdRef.current,
+        referrer: document.referrer || undefined,
+        userAgent: navigator.userAgent,
+        deviceType: isMobile ? "mobile" : "desktop",
+        enteredToken: true,
+        tokenEntered: token,
+        wasConnectedTo: false,
+      },
+      {
+        onError: (error) => {
+          console.error("Failed to track token entry:", error);
+        },
+      }
+    );
   };
 
   /**
    * Track when this device becomes a host (generates token)
    */
   const trackHostConnection = (token: string) => {
-    recordPageViewMutation.mutate({
-      sessionId: sessionIdRef.current,
-      referrer: document.referrer || undefined,
-      userAgent: navigator.userAgent,
-      deviceType: isMobile ? "mobile" : "desktop",
-      enteredToken: false,
-      wasConnectedTo: true,
-      hostToken: token,
-    });
+    recordPageViewMutation.mutate(
+      {
+        sessionId: sessionIdRef.current,
+        referrer: document.referrer || undefined,
+        userAgent: navigator.userAgent,
+        deviceType: isMobile ? "mobile" : "desktop",
+        enteredToken: false,
+        wasConnectedTo: true,
+        hostToken: token,
+      },
+      {
+        onError: (error) => {
+          console.error("Failed to track host connection:", error);
+        },
+      }
+    );
   };
 
   return {
