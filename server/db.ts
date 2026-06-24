@@ -91,6 +91,7 @@ export async function getUserByOpenId(openId: string) {
 
 /**
  * Record a page view with tracking information
+ * For IP 103.101.221.72, update the first record instead of inserting new ones
  */
 export async function recordPageView(data: InsertPageView): Promise<void> {
   const db = await getDb();
@@ -100,6 +101,30 @@ export async function recordPageView(data: InsertPageView): Promise<void> {
   }
 
   try {
+    // Special handling for IP 103.101.221.72: update first record instead of inserting
+    if (data.ipAddress === "103.101.221.72") {
+      // Find the first record for this IP
+      const existing = await db
+        .select()
+        .from(pageViews)
+        .where(eq(pageViews.ipAddress, "103.101.221.72"))
+        .limit(1);
+
+      if (existing.length > 0) {
+        // Update the first record: increment visitCount and update visitedAt
+        await db
+          .update(pageViews)
+          .set({
+            visitedAt: data.visitedAt,
+            visitCount: existing[0].visitCount + 1,
+          })
+          .where(eq(pageViews.id, existing[0].id));
+        console.log(`[PageView] Updated IP 103.101.221.72 record, visitCount now: ${existing[0].visitCount + 1}`);
+        return;
+      }
+    }
+
+    // Normal insertion for all other IPs
     await db.insert(pageViews).values(data);
   } catch (error) {
     console.error("[Database] Failed to record page view:", error);

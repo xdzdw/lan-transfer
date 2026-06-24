@@ -1,0 +1,1 @@
+ALTER TABLE `pageViews` ADD `visitCount` int DEFAULT 1 NOT NULL;

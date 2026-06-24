@@ -57,6 +57,8 @@ export const pageViews = mysqlTable("pageViews", {
   sessionDurationSeconds: int("sessionDurationSeconds").default(0).notNull(),
   /** Unique session ID to group related events */
   sessionId: varchar("sessionId", { length: 64 }).notNull(),
+  /** Visit count for tracking repeated visits from same IP */
+  visitCount: int("visitCount").default(1).notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
