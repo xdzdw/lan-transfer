@@ -5,6 +5,7 @@ import { publicProcedure, protectedProcedure, router } from "./_core/trpc";
 import { recordPageView, getPageViewStats, getPageViewsByDeviceType } from "./db";
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
+import { checkRateLimit } from "./rateLimiter";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -45,6 +46,15 @@ export const appRouter = router({
           ctx.req.socket.remoteAddress ||
           "unknown";
 
+        // Check rate limit (1 request per minute)
+        const isAllowed = checkRateLimit(ipAddress, 1);
+
+        // If rate limited, silently reject without recording
+        if (!isAllowed) {
+          console.warn(`[RateLimit] IP ${ipAddress} exceeded rate limit (1 per minute)`);
+          return { success: false, reason: "rate_limited" };
+        }
+
         await recordPageView({
           visitedAt: new Date(),
           ipAddress,
@@ -79,9 +89,10 @@ export const appRouter = router({
         if (ctx.user?.role !== "admin") {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "Only admins can access analytics",
+            message: "Only admins can view analytics",
           });
         }
+
         const stats = await getPageViewStats(input.startTime, input.endTime);
         return stats || [];
       }),
@@ -101,9 +112,10 @@ export const appRouter = router({
         if (ctx.user?.role !== "admin") {
           throw new TRPCError({
             code: "FORBIDDEN",
-            message: "Only admins can access analytics",
+            message: "Only admins can view analytics",
           });
         }
+
         const stats = await getPageViewsByDeviceType(
           input.startTime,
           input.endTime
@@ -111,13 +123,6 @@ export const appRouter = router({
         return stats || [];
       }),
   }),
-
-  // TODO: add feature routers here, e.g.
-  // todo: router({
-  //   list: protectedProcedure.query(({ ctx }) =>
-  //     db.getUserTodos(ctx.user.id)
-  //   ),
-  // }),
 });
 
 export type AppRouter = typeof appRouter;

@@ -1,0 +1,31 @@
+{
+  "query": "SELECT COUNT(*) as total, MIN(visitedAt) as first_visit, MAX(visitedAt) as last_visit, deviceType, referrer FROM pageViews WHERE ipAddress = '103.101.221.72' GROUP BY deviceType, referrer;",
+  "command": "mysql --batch --raw --column-names --default-character-set=utf8mb4 --host gateway03.us-east-1.prod.aws.tidbcloud.com --port 4000 --user 21u524UirFYRKcb.57f04066ae59 --database CzjekiD5eeTZHjCPKJbady --execute SELECT COUNT(*) as total, MIN(visitedAt) as first_visit, MAX(visitedAt) as last_visit, deviceType, referrer FROM pageViews WHERE ipAddress = '103.101.221.72' GROUP BY deviceType, referrer;",
+  "rows": [
+    {
+      "total": "1",
+      "first_visit": "2026-06-24 11:17:09",
+      "last_visit": "2026-06-24 11:17:09",
+      "deviceType": "mobile",
+      "referrer": "https://manus.im/"
+    },
+    {
+      "total": "4052",
+      "first_visit": "2026-06-24 11:17:07",
+      "last_visit": "2026-06-24 11:18:52",
+      "deviceType": "desktop",
+      "referrer": "https://manus.im/"
+    },
+    {
+      "total": "7638",
+      "first_visit": "2026-06-24 11:17:57",
+      "last_visit": "2026-06-24 11:18:29",
+      "deviceType": "desktop",
+      "referrer": "NULL"
+    }
+  ],
+  "messages": [],
+  "stdout": "total\tfirst_visit\tlast_visit\tdeviceType\treferrer\n1\t2026-06-24 11:17:09\t2026-06-24 11:17:09\tmobile\thttps://manus.im/\n4052\t2026-06-24 11:17:07\t2026-06-24 11:18:52\tdesktop\thttps://manus.im/\n7638\t2026-06-24 11:17:57\t2026-06-24 11:18:29\tdesktop\tNULL\n",
+  "stderr": "",
+  "execution_time_ms": 1802
+}
