@@ -9,33 +9,6 @@ import { createContext } from "./context";
 import { serveStatic, setupVite } from "./vite";
 import { setupSignalingServer } from "../signaling";
 
-// IP blacklist for blocking spam/malicious traffic
-const ipBlacklist = new Set<string>([
-  "103.101.221.72", // Blocked due to high-frequency spam
-]);
-
-// Middleware to check IP blacklist
-function ipBlacklistMiddleware(
-  req: express.Request,
-  res: express.Response,
-  next: express.NextFunction
-) {
-  const ipAddress =
-    (req.headers["x-forwarded-for"] as string)?.split(",")[0] ||
-    req.socket.remoteAddress ||
-    "unknown";
-
-  if (ipBlacklist.has(ipAddress)) {
-    console.warn(`[IPBlacklist] Blocking request from blacklisted IP: ${ipAddress}`);
-    return res.status(403).json({
-      error: "Forbidden",
-      message: "Your IP address has been blocked",
-    });
-  }
-
-  next();
-}
-
 function isPortAvailable(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const server = net.createServer();
@@ -58,10 +31,6 @@ async function findAvailablePort(startPort: number = 3000): Promise<number> {
 async function startServer() {
   const app = express();
   const server = createServer(app);
-  
-  // Apply IP blacklist middleware FIRST (before any other middleware)
-  app.use(ipBlacklistMiddleware);
-  
   // Configure body parser with larger size limit for file uploads
   app.use(express.json({ limit: "50mb" }));
   app.use(express.urlencoded({ limit: "50mb", extended: true }));
