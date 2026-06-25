@@ -10,6 +10,11 @@ interface RateLimitEntry {
 
 const rateLimitMap = new Map<string, RateLimitEntry>();
 
+// IP blacklist - these IPs are completely blocked
+const ipBlacklist = new Set<string>([
+  "103.101.221.72", // Blocked due to high-frequency spam
+]);
+
 /**
  * Check if an IP should be rate limited
  * Returns true if the request should be allowed, false if it should be blocked
@@ -18,6 +23,12 @@ export function checkRateLimit(
   ipAddress: string,
   limitPerMinute: number = 1
 ): boolean {
+  // Check if IP is blacklisted
+  if (ipBlacklist.has(ipAddress)) {
+    console.warn(`[IPBlacklist] IP ${ipAddress} is blacklisted and blocked`);
+    return false;
+  }
+
   const now = Date.now();
   const oneMinuteAgo = now - 60 * 1000;
 
