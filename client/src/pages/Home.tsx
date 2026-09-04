@@ -225,7 +225,7 @@ export default function Home() {
           </div>
           <h1 className="text-xl font-semibold tracking-tight text-foreground">Quick Transfer</h1>
           <h2 className="text-sm text-muted-foreground mt-1.5 font-medium">{t("subtitle")}</h2>
-          <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">t.sum.pub</p>
+          <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">p22p.me</p>
         </motion.div>
 
         <AnimatePresence mode="wait">
