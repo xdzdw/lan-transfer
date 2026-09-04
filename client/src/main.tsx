@@ -32,6 +32,11 @@ queryClient.getQueryCache().subscribe(event => {
 queryClient.getMutationCache().subscribe(event => {
   if (event.type === "updated" && event.action.type === "error") {
     const error = event.mutation.state.error;
+    const meta = event.mutation.options.meta as { silentAnalytics?: boolean } | undefined;
+
+    // Page analytics is best-effort and must never surface as an app error.
+    if (meta?.silentAnalytics) return;
+
     redirectToLoginIfUnauthorized(error);
     console.error("[API Mutation Error]", error);
   }
