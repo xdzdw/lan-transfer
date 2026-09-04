@@ -5,12 +5,12 @@ export type Lang = "en" | "zh";
 const translations = {
   en: {
     // Home page - title area
-    subtitle: "Transfer Files from Phone to PC Instantly",
+    subtitle: "Transfer files between two devices instantly",
 
     // Host mode
     waitingForConnection: "Waiting for connection",
     initializing: "Initializing",
-    enterCodeOnPhone: "Enter this code on your phone",
+    enterCodeOnPhone: "Enter this code on the other device",
     step1: "Open <mono>t.sum.pub</mono> on another device",
     step2: "Enter the 4-digit code above",
     step3: "Start transferring files and text",
@@ -18,14 +18,14 @@ const translations = {
 
     // Client mode
     connecting: "Connecting",
-    enterCodeFromPC: "Enter code from PC",
+    enterCodeFromPC: "Enter the code from the other device",
     connectingDots: "Connecting...",
     tryAgain: "Try again",
-    lookAtPC: "Look at your PC screen for the 4-digit code",
+    lookAtPC: "Find the 4-digit code on the other device",
 
     // Mode switcher
-    switchToMobile: "Switch to mobile or another device",
-    switchToPC: "Switch to PC mode",
+    switchToMobile: "Switch to receiver mode",
+    switchToPC: "Switch to sender mode",
 
     // Privacy / tech details
     noFilesStored: "No files stored on server",
@@ -64,16 +64,16 @@ const translations = {
     goBackHome: "Go back home",
 
     // Document title
-    documentTitle: "Quick Transfer \u2013 Phone to PC File Transfer",
+    documentTitle: "Quick Transfer \u2013 Two-Device File Transfer",
   },
   zh: {
     // 首页 - 标题区域
-    subtitle: "手机电脑互传文件，无需安装应用",
+    subtitle: "两台设备互传文件，无需安装应用",
 
     // Host 模式
     waitingForConnection: "等待连接",
     initializing: "初始化中",
-    enterCodeOnPhone: "在手机上输入此代码",
+    enterCodeOnPhone: "在另一台设备上输入此代码",
     step1: "在另一台设备上打开 <mono>t.sum.pub</mono>",
     step2: "输入上方的4位数字代码",
     step3: "开始传输文件和文字",
@@ -81,14 +81,14 @@ const translations = {
 
     // Client 模式
     connecting: "连接中",
-    enterCodeFromPC: "输入电脑上的代码",
+    enterCodeFromPC: "输入另一台设备上的代码",
     connectingDots: "连接中...",
     tryAgain: "重试",
-    lookAtPC: "查看电脑屏幕上的4位数字代码",
+    lookAtPC: "在另一台设备上查看4位数字代码",
 
     // 模式切换
-    switchToMobile: "切换为手机或另一台设备",
-    switchToPC: "切换为电脑模式",
+    switchToMobile: "切换为接收模式",
+    switchToPC: "切换为发送模式",
 
     // 隐私 / 技术细节
     noFilesStored: "服务器不存储任何文件",
@@ -127,7 +127,7 @@ const translations = {
     goBackHome: "返回首页",
 
     // 页面标题
-    documentTitle: "Quick Transfer \u2013 手机电脑互传文件",
+    documentTitle: "Quick Transfer \u2013 两台设备互传文件",
   },
 } as const;
 

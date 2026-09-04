@@ -30,6 +30,7 @@ import {
   type TransportMode,
 } from "@/lib/webrtc";
 import { pushDebugLog } from "@/components/DebugPanel";
+import { appendTransferItem } from "@/lib/transferItems";
 
 interface FileChunkMeta {
   id: string;
@@ -124,7 +125,7 @@ export function usePeerClient() {
   }, []);
 
   const addItem = useCallback((item: TransferItem) => {
-    setItems(prev => [item, ...prev]);
+    setItems(prev => appendTransferItem(prev, item));
   }, []);
 
   const updateItem = useCallback((id: string, updates: Partial<TransferItem>) => {

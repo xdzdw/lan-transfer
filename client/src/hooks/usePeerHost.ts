@@ -29,6 +29,7 @@ import {
   type TransportMode,
 } from "@/lib/webrtc";
 import { pushDebugLog } from "@/components/DebugPanel";
+import { appendTransferItem } from "@/lib/transferItems";
 
 export interface TransferItem {
   id: string;
@@ -111,7 +112,7 @@ export function usePeerHost() {
   const sentFilesRef = useRef<Map<string, { file: File; totalChunks: number; sentAt: number }>>(new Map());
 
   const addItem = useCallback((item: TransferItem) => {
-    setItems(prev => [item, ...prev]);
+    setItems(prev => appendTransferItem(prev, item));
   }, []);
 
   const updateItem = useCallback((id: string, updates: Partial<TransferItem>) => {

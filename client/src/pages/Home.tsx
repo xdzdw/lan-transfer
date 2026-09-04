@@ -409,9 +409,9 @@ export default function Home() {
         >
           <button
             onClick={handleSwitchMode}
-            className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-border/60 text-xs font-medium text-muted-foreground hover:text-foreground hover:border-foreground/30 hover:bg-accent/50 transition-all duration-200"
+            className="w-full max-w-[280px] min-h-14 inline-flex items-center justify-center gap-2.5 px-5 py-3.5 rounded-2xl border-2 border-primary/25 bg-primary/5 text-sm font-semibold text-foreground shadow-sm hover:border-primary/50 hover:bg-primary/10 hover:shadow-md active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 transition-all duration-200"
           >
-            <ArrowLeftRight className="size-3.5" />
+            <ArrowLeftRight className="size-5 text-primary" />
             {mode === "host" ? t("switchToMobile") : t("switchToPC")}
           </button>
         </motion.div>

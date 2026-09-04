@@ -51,7 +51,10 @@ const TURN_SERVERS: RTCIceServer[] = [
 ];
 
 function getIceServers(): RTCIceServer[] {
-  const lang = localStorage.getItem("qt-lang") || (navigator.language || "");
+  const storedLang =
+    typeof localStorage !== "undefined" ? localStorage.getItem("qt-lang") : null;
+  const browserLang = typeof navigator !== "undefined" ? navigator.language || "" : "";
+  const lang = storedLang || browserLang;
   const isChinese = lang === "zh" || lang.startsWith("zh");
 
   const stunServers: RTCIceServer[] = isChinese

@@ -29,7 +29,7 @@ import {
   Globe,
   Loader2,
 } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface TransferPanelProps {
   items: TransferItem[];
@@ -80,6 +80,17 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
+
+  // Keep the newest conversation item visible whenever a new item arrives.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container) return;
+
+    container.scrollTo({
+      top: container.scrollHeight,
+      behavior: "smooth",
+    });
+  }, [items.length]);
 
   const handleSendText = useCallback(() => {
     const trimmed = text.trim();
