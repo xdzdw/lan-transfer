@@ -13,6 +13,40 @@ export function isValidScreenshotSelection(selection: { width: number; height: n
   return Boolean(selection && selection.width >= 8 && selection.height >= 8);
 }
 
+export interface ScreenshotSelectionState {
+  start: Point | null;
+  current: Point | null;
+  isDragging: boolean;
+}
+
+export type ScreenshotPointerEvent =
+  | { type: "down"; point: Point }
+  | { type: "move"; point: Point }
+  | { type: "up"; point: Point }
+  | { type: "cancel" };
+
+export const emptyScreenshotSelection: ScreenshotSelectionState = {
+  start: null,
+  current: null,
+  isDragging: false,
+};
+
+export function reduceScreenshotSelection(
+  state: ScreenshotSelectionState,
+  event: ScreenshotPointerEvent,
+): ScreenshotSelectionState {
+  if (event.type === "down") {
+    return { start: event.point, current: event.point, isDragging: true };
+  }
+  if (event.type === "move") {
+    return state.isDragging ? { ...state, current: event.point } : state;
+  }
+  if (event.type === "up") {
+    return state.isDragging ? { ...state, current: event.point, isDragging: false } : state;
+  }
+  return { ...state, isDragging: false };
+}
+
 export function normalizeSelection(start: Point | null, current: Point | null) {
   if (!start || !current) return null;
   return {
@@ -32,14 +66,13 @@ interface ScreenshotRegionSelectorProps {
 export function ScreenshotRegionSelector({ file, onConfirm, onCancel }: ScreenshotRegionSelectorProps) {
   const { t } = useI18n();
   const imageRef = useRef<HTMLImageElement>(null);
-  const [start, setStart] = useState<Point | null>(null);
-  const [current, setCurrent] = useState<Point | null>(null);
+  const [selectionState, setSelectionState] = useState<ScreenshotSelectionState>(emptyScreenshotSelection);
   const [isCropping, setIsCropping] = useState(false);
   const imageUrl = useMemo(() => URL.createObjectURL(file), [file]);
 
   useEffect(() => () => URL.revokeObjectURL(imageUrl), [imageUrl]);
 
-  const selection = normalizeSelection(start, current);
+  const selection = normalizeSelection(selectionState.start, selectionState.current);
 
   const getPoint = (event: React.PointerEvent<HTMLDivElement>): Point => {
     const rect = imageRef.current?.getBoundingClientRect();
@@ -53,16 +86,18 @@ export function ScreenshotRegionSelector({ file, onConfirm, onCancel }: Screensh
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = getPoint(event);
-    setStart(point);
-    setCurrent(point);
+    setSelectionState((state) => reduceScreenshotSelection(state, { type: "down", point }));
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
-    if (start) setCurrent(getPoint(event));
+    setSelectionState((state) => reduceScreenshotSelection(state, { type: "move", point: getPoint(event) }));
   };
 
-  const handlePointerUp = () => {
-    if (start) setCurrent(current);
+  const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    setSelectionState((state) => reduceScreenshotSelection(state, { type: "up", point: getPoint(event) }));
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   };
 
   const handleConfirm = async () => {
@@ -105,7 +140,8 @@ export function ScreenshotRegionSelector({ file, onConfirm, onCancel }: Screensh
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
-          onPointerCancel={handlePointerUp}
+          onPointerCancel={() => setSelectionState((state) => reduceScreenshotSelection(state, { type: "cancel" }))}
+          onLostPointerCapture={() => setSelectionState((state) => reduceScreenshotSelection(state, { type: "cancel" }))}
         >
           <img ref={imageRef} src={imageUrl} alt={t("screenshotAlt")} className="block max-h-[68vh] max-w-full object-contain" draggable={false} />
           {selection && (
