@@ -26,7 +26,7 @@ import {
   FileVideo,
   Loader2,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 function FileIcon({ name, className }: { name: string; className?: string }) {
@@ -51,6 +51,18 @@ interface TransferItemRowProps {
 export function TransferItemRow({ item }: TransferItemRowProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [previewUrl, setPreviewUrl] = useState<string>();
+
+  useEffect(() => {
+    if (!item.isScreenshot || !item.blob) {
+      setPreviewUrl(undefined);
+      return;
+    }
+
+    const url = URL.createObjectURL(item.blob);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [item.blob, item.isScreenshot]);
 
   const handleCopyText = async () => {
     if (item.content) {
@@ -104,6 +116,59 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
                 : <Copy className="size-3.5 text-muted-foreground/60" />
               }
             </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (item.isScreenshot) {
+    const screenshotPreviewUrl = item.previewUrl ?? previewUrl;
+
+    return (
+      <div className="group flex items-start gap-3 py-3.5 border-b border-border/40 last:border-0">
+        <div className="shrink-0 mt-1">
+          {isReceived
+            ? <ArrowDown className="size-3 text-primary" />
+            : <ArrowUp className="size-3 text-muted-foreground/50" />}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between gap-2 mb-1.5">
+            <span className="text-[11px] font-medium text-foreground/80">{t("screenshot")}</span>
+            <span className="text-[10px] font-mono text-muted-foreground/50">{formatTime(item.timestamp)}</span>
+          </div>
+          {screenshotPreviewUrl ? (
+            <img
+              src={screenshotPreviewUrl}
+              alt={t("screenshotAlt")}
+              draggable={false}
+              className="block max-h-64 max-w-full rounded-md border border-border/60 bg-muted/20 object-contain"
+            />
+          ) : (
+            <div className="flex h-16 items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/20 px-3 text-[11px] text-muted-foreground/60">
+              <FileImage className="size-4" />
+              <span>{item.status === "transferring" ? `${item.progress || 0}%` : t("screenshot")}</span>
+            </div>
+          )}
+          {item.status === "transferring" && (
+            <div className="mt-2 flex items-center gap-2">
+              <Progress value={item.progress || 0} className="h-[3px] flex-1" />
+              <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">{item.progress || 0}%</span>
+            </div>
+          )}
+          <div className="mt-1.5 flex items-center justify-end gap-1">
+            {item.status === "done" && isReceived && item.blob && (
+              <button
+                onClick={handleDownload}
+                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted transition-all"
+                title={t("saveScreenshot")}
+              >
+                <Download className="size-3.5" />
+                <span>{t("saveScreenshot")}</span>
+              </button>
+            )}
+            {item.status === "done" && !isReceived && <Check className="size-3.5 text-primary/60" />}
+            {item.status === "error" && <AlertTriangle className="size-3.5 text-destructive" />}
           </div>
         </div>
       </div>

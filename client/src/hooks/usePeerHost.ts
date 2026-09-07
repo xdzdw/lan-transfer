@@ -35,10 +35,14 @@ export interface TransferItem {
   id: string;
   type: "text" | "file";
   direction: "sent" | "received";
+  /** True when this file is a one-frame screen capture. */
+  isScreenshot?: boolean;
   name: string;
   size?: number;
   content?: string;
   blob?: Blob;
+  /** Optional hydrated preview URL used by browser UI/tests. */
+  previewUrl?: string;
   progress?: number;
   timestamp: number;
   status: "pending" | "transferring" | "done" | "error";
@@ -52,6 +56,7 @@ interface FileChunkMeta {
   size: number;
   mimeType: string;
   totalChunks: number;
+  isScreenshot?: boolean;
 }
 
 interface FileReceiveState {
@@ -68,6 +73,7 @@ interface FileSendState {
   totalChunks: number;
   lastSentChunk: number;
   completed: boolean;
+  isScreenshot?: boolean;
 }
 
 const CHUNK_SIZE = 512 * 1024; // 512KB — larger chunks to reduce overhead and improve throughput
@@ -304,6 +310,7 @@ export function usePeerHost() {
               progress: 0,
               timestamp: Date.now(),
               status: "transferring",
+              isScreenshot: meta.isScreenshot,
             });
           }
           break;
@@ -417,7 +424,7 @@ export function usePeerHost() {
     // Re-send file-meta so receiver knows what's coming
     const metaStr = JSON.stringify({
       type: "file-meta",
-      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
+      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks, isScreenshot: sendState.isScreenshot },
     });
     sendViaTransport(rtcRef.current, ws, metaStr);
 
@@ -829,7 +836,7 @@ export function usePeerHost() {
     pushDebugLog(`[SEND] Text via ${mode}`);
   }, [addItem]);
 
-  const sendFile = useCallback(async (file: File) => {
+  const sendFile = useCallback(async (file: File, options?: { isScreenshot?: boolean }) => {
     const ws = wsRef.current;
     const id = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -844,6 +851,7 @@ export function usePeerHost() {
       totalChunks,
       lastSentChunk: -1,
       completed: false,
+      isScreenshot: options?.isScreenshot,
     };
     pendingSendsRef.current.set(id, sendState);
 
@@ -853,15 +861,17 @@ export function usePeerHost() {
       direction: "sent",
       name: file.name,
       size: file.size,
+      blob: options?.isScreenshot ? file : undefined,
       progress: 0,
       timestamp: Date.now(),
       status: "transferring",
+      isScreenshot: options?.isScreenshot,
     });
 
     // Send file metadata
     const metaStr = JSON.stringify({
       type: "file-meta",
-      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
+      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks, isScreenshot: options?.isScreenshot },
     });
     sendViaTransport(rtcRef.current, ws, metaStr);
 

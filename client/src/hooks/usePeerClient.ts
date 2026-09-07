@@ -38,6 +38,7 @@ interface FileChunkMeta {
   size: number;
   mimeType: string;
   totalChunks: number;
+  isScreenshot?: boolean;
 }
 
 interface FileReceiveState {
@@ -54,6 +55,7 @@ interface FileSendState {
   totalChunks: number;
   lastSentChunk: number; // last successfully queued chunk index
   completed: boolean;
+  isScreenshot?: boolean;
 }
 
 const CHUNK_SIZE = 512 * 1024; // 512KB — larger chunks to reduce overhead and improve throughput
@@ -336,6 +338,7 @@ export function usePeerClient() {
               progress: 0,
               timestamp: Date.now(),
               status: "transferring",
+              isScreenshot: meta.isScreenshot,
             });
           }
           break;
@@ -448,7 +451,7 @@ export function usePeerClient() {
     // Re-send file-meta so receiver knows what's coming (in case they lost it)
     const metaStr = JSON.stringify({
       type: "file-meta",
-      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
+      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks, isScreenshot: sendState.isScreenshot },
     });
     sendViaTransport(rtcRef.current, ws, metaStr);
 
@@ -837,7 +840,7 @@ export function usePeerClient() {
     console.log(`[Client] Sent text via ${mode}`);
   }, [addItem]);
 
-  const sendFile = useCallback(async (file: File) => {
+  const sendFile = useCallback(async (file: File, options?: { isScreenshot?: boolean }) => {
     const ws = wsRef.current;
     const id = crypto.randomUUID();
     const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
@@ -852,6 +855,7 @@ export function usePeerClient() {
       totalChunks,
       lastSentChunk: -1,
       completed: false,
+      isScreenshot: options?.isScreenshot,
     };
     pendingSendsRef.current.set(id, sendState);
 
@@ -861,14 +865,16 @@ export function usePeerClient() {
       direction: "sent",
       name: file.name,
       size: file.size,
+      blob: options?.isScreenshot ? file : undefined,
       progress: 0,
       timestamp: Date.now(),
       status: "transferring",
+      isScreenshot: options?.isScreenshot,
     });
 
     const metaStr = JSON.stringify({
       type: "file-meta",
-      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks },
+      meta: { id, name: file.name, size: file.size, mimeType: file.type, totalChunks, isScreenshot: options?.isScreenshot },
     });
     sendViaTransport(rtcRef.current, ws, metaStr);
 

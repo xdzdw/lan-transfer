@@ -15,6 +15,7 @@ import type { TransferItem } from "@/hooks/usePeerHost";
 import type { TransportMode } from "@/lib/webrtc";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
+import { captureScreenshot, isScreenshotCaptureSupported, ScreenshotCaptureError } from "@/lib/screenshot";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpFromLine,
@@ -28,13 +29,15 @@ import {
   Zap,
   Globe,
   Loader2,
+  Camera,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { toast } from "sonner";
 
 interface TransferPanelProps {
   items: TransferItem[];
   onSendText: (text: string) => void;
-  onSendFile: (file: File) => void;
+  onSendFile: (file: File, options?: { isScreenshot?: boolean }) => void | Promise<void>;
   onDisconnect: () => void;
   role: "host" | "client";
   transportMode: TransportMode;
@@ -87,6 +90,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
+  const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -111,6 +115,28 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
       handleSendText();
     }
   }, [handleSendText]);
+
+  const handleCaptureScreenshot = useCallback(async () => {
+    if (!isScreenshotCaptureSupported()) {
+      toast.error(t("screenshotUnsupported"));
+      return;
+    }
+
+    setIsCapturingScreenshot(true);
+    try {
+      const screenshot = await captureScreenshot();
+      await onSendFile(screenshot, { isScreenshot: true });
+      toast.success(t("screenshotSent"));
+    } catch (error) {
+      if (error instanceof ScreenshotCaptureError && error.code === "cancelled") {
+        toast.info(t("screenshotCancelled"));
+      } else {
+        toast.error(t("screenshotFailed"));
+      }
+    } finally {
+      setIsCapturingScreenshot(false);
+    }
+  }, [onSendFile, t]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -273,7 +299,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
               placeholder={t("typeMessage")}
               rows={1}
               className={cn(
-                "w-full resize-none rounded-lg border border-input bg-muted/30 px-3 py-2.5 pr-10 text-sm",
+                "w-full resize-none rounded-lg border border-input bg-muted/30 px-3 py-2.5 pr-20 text-sm",
                 "placeholder:text-muted-foreground/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:bg-transparent",
                 "min-h-[42px] max-h-[120px] field-sizing-content transition-colors"
               )}
@@ -286,9 +312,21 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
               onChange={handleFileSelect}
             />
             <button
+              type="button"
+              onClick={handleCaptureScreenshot}
+              disabled={isCapturingScreenshot}
+              className="absolute right-10 bottom-2.5 p-1 rounded hover:bg-muted disabled:opacity-50 transition-colors text-muted-foreground/50 hover:text-muted-foreground"
+              title={t("captureScreenshot")}
+              aria-label={t("captureScreenshot")}
+            >
+              {isCapturingScreenshot ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
+            </button>
+            <button
+              type="button"
               onClick={() => fileInputRef.current?.click()}
               className="absolute right-2.5 bottom-2.5 p-1 rounded hover:bg-muted transition-colors text-muted-foreground/50 hover:text-muted-foreground"
               title={t("attachFile")}
+              aria-label={t("attachFile")}
             >
               <Paperclip className="size-4" />
             </button>

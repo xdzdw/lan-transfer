@@ -52,6 +52,14 @@ const translations = {
     dropToSend: "Drop files to send",
     typeMessage: "Type a message...",
     attachFile: "Attach file",
+    captureScreenshot: "Capture screenshot",
+    screenshot: "Screenshot",
+    screenshotAlt: "Screenshot preview",
+    screenshotUnsupported: "Screen capture is not supported in this browser",
+    screenshotCancelled: "Screenshot cancelled",
+    screenshotFailed: "Could not capture the screenshot",
+    screenshotSent: "Screenshot sent",
+    saveScreenshot: "Save screenshot",
 
     // Transfer item
     copiedToClipboard: "Copied to clipboard",
@@ -115,6 +123,14 @@ const translations = {
     dropToSend: "松开以发送文件",
     typeMessage: "输入消息...",
     attachFile: "添加文件",
+    captureScreenshot: "截取屏幕并发送",
+    screenshot: "屏幕截图",
+    screenshotAlt: "截图预览",
+    screenshotUnsupported: "当前浏览器不支持屏幕截图",
+    screenshotCancelled: "已取消截图",
+    screenshotFailed: "截图失败，请重试",
+    screenshotSent: "截图已发送",
+    saveScreenshot: "保存截图",
 
     // 传输项
     copiedToClipboard: "已复制到剪贴板",
