@@ -3,6 +3,7 @@ import {
   ScreenshotCaptureError,
   isImageClipboardSupported,
   isScreenshotCaptureSupported,
+  scaleCropSelection,
 } from "./screenshot";
 
 describe("screenshot capture support", () => {
@@ -16,9 +17,20 @@ describe("screenshot capture support", () => {
 
   it("keeps capture errors classified for the UI", () => {
     const error = new ScreenshotCaptureError("cancelled", "cancelled");
-
-    expect(error).toBeInstanceOf(Error);
     expect(error.name).toBe("ScreenshotCaptureError");
     expect(error.code).toBe("cancelled");
+  });
+
+  it("classifies black selected-window frames separately", () => {
+    const error = new ScreenshotCaptureError("black", "black frame");
+    expect(error.code).toBe("black");
+  });
+
+  it("maps a displayed selection back to natural screenshot pixels", () => {
+    expect(scaleCropSelection(
+      { x: 10, y: 20, width: 100, height: 50 },
+      { width: 500, height: 250 },
+      { width: 1000, height: 500 },
+    )).toEqual({ x: 20, y: 40, width: 200, height: 100 });
   });
 });

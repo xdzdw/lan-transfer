@@ -58,11 +58,16 @@ const translations = {
     screenshotUnsupported: "Screen capture is not supported in this browser",
     screenshotCancelled: "Screenshot cancelled",
     screenshotFailed: "Could not capture the screenshot",
+    screenshotBlackFrame: "The selected window returned a black image. Try selecting a tab or screen, or disable protected content.",
     screenshotSent: "Screenshot sent",
     copyScreenshot: "Copy image",
     screenshotCopied: "Image copied",
     screenshotCopyUnsupported: "Image clipboard is not supported; use Save screenshot instead",
     screenshotCopyFailed: "Could not copy the image; use Save screenshot instead",
+    selectScreenshotRegion: "Select screenshot area",
+    selectScreenshotRegionHint: "Drag over the area you want to send",
+    cancelScreenshot: "Cancel screenshot",
+    useSelectedRegion: "Use selected area",
     saveScreenshot: "Save screenshot",
 
     // Transfer item
@@ -133,11 +138,16 @@ const translations = {
     screenshotUnsupported: "当前浏览器不支持屏幕截图",
     screenshotCancelled: "已取消截图",
     screenshotFailed: "截图失败，请重试",
+    screenshotBlackFrame: "选中的窗口返回了黑屏，请改选标签页或整个屏幕，并关闭受保护内容",
     screenshotSent: "截图已发送",
     copyScreenshot: "复制图片",
     screenshotCopied: "图片已复制",
     screenshotCopyUnsupported: "当前浏览器不支持复制图片，请使用“保存截图”",
     screenshotCopyFailed: "图片复制失败，请使用“保存截图”",
+    selectScreenshotRegion: "选择截图区域",
+    selectScreenshotRegionHint: "拖动选择要发送的区域",
+    cancelScreenshot: "取消截图",
+    useSelectedRegion: "使用选中区域",
     saveScreenshot: "保存截图",
 
     // 传输项

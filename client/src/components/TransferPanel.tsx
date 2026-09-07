@@ -16,6 +16,7 @@ import type { TransportMode } from "@/lib/webrtc";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import { captureScreenshot, isScreenshotCaptureSupported, ScreenshotCaptureError } from "@/lib/screenshot";
+import { ScreenshotRegionSelector } from "@/components/ScreenshotRegionSelector";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpFromLine,
@@ -91,6 +92,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
+  const [pendingScreenshot, setPendingScreenshot] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -125,11 +127,12 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
     setIsCapturingScreenshot(true);
     try {
       const screenshot = await captureScreenshot();
-      await onSendFile(screenshot, { isScreenshot: true });
-      toast.success(t("screenshotSent"));
+      setPendingScreenshot(screenshot);
     } catch (error) {
       if (error instanceof ScreenshotCaptureError && error.code === "cancelled") {
         toast.info(t("screenshotCancelled"));
+      } else if (error instanceof ScreenshotCaptureError && error.code === "black") {
+        toast.error(t("screenshotBlackFrame"));
       } else {
         toast.error(t("screenshotFailed"));
       }
@@ -137,6 +140,24 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
       setIsCapturingScreenshot(false);
     }
   }, [onSendFile, t]);
+
+  const handleScreenshotConfirm = useCallback(async (screenshot: File) => {
+    try {
+      await onSendFile(screenshot, { isScreenshot: true });
+      toast.success(t("screenshotSent"));
+    } catch {
+      toast.error(t("screenshotFailed"));
+    } finally {
+      setPendingScreenshot(null);
+      setIsCapturingScreenshot(false);
+    }
+  }, [onSendFile, t]);
+
+  const handleScreenshotCancel = useCallback(() => {
+    setPendingScreenshot(null);
+    setIsCapturingScreenshot(false);
+    toast.info(t("screenshotCancelled"));
+  }, [t]);
 
   const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -191,6 +212,14 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
       onDragOver={handleDragOver}
       onDrop={handleDrop}
     >
+      {pendingScreenshot && (
+        <ScreenshotRegionSelector
+          file={pendingScreenshot}
+          onConfirm={handleScreenshotConfirm}
+          onCancel={handleScreenshotCancel}
+        />
+      )}
+
       {/* Drag overlay */}
       <AnimatePresence>
         {isDragOver && (
