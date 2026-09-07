@@ -43,6 +43,17 @@ interface TransferPanelProps {
   roomCode?: string;
 }
 
+export function scrollConversationToLatest(
+  container: Pick<HTMLDivElement, "scrollHeight" | "scrollTo"> | null
+) {
+  if (!container) return;
+
+  container.scrollTo({
+    top: container.scrollHeight,
+    behavior: "smooth",
+  });
+}
+
 function TransportBadge({ mode }: { mode: TransportMode }) {
   const { t } = useI18n();
 
@@ -83,13 +94,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
 
   // Keep the newest conversation item visible whenever a new item arrives.
   useEffect(() => {
-    const container = scrollRef.current;
-    if (!container) return;
-
-    container.scrollTo({
-      top: container.scrollHeight,
-      behavior: "smooth",
-    });
+    scrollConversationToLatest(scrollRef.current);
   }, [items.length]);
 
   const handleSendText = useCallback(() => {

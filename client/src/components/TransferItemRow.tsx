@@ -5,6 +5,7 @@
  * no cards, just content separated by thin borders.
  */
 
+import React from "react";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize, formatTime, getFileCategory } from "@/lib/format";
 import type { TransferItem } from "@/hooks/usePeerHost";
@@ -89,20 +90,22 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
           <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap text-foreground/90">
             {item.content}
           </p>
-          <span className="text-[10px] font-mono text-muted-foreground/50 mt-1.5 block">
-            {formatTime(item.timestamp)}
-          </span>
+          <div className="mt-1.5 flex items-center justify-between gap-2">
+            <span className="text-[10px] font-mono text-muted-foreground/50">
+              {formatTime(item.timestamp)}
+            </span>
+            <button
+              onClick={handleCopyText}
+              className="shrink-0 -mr-1 p-1.5 rounded-md hover:bg-muted active:bg-muted transition-all"
+              title={t("copyToClipboard")}
+            >
+              {copied
+                ? <Check className="size-3.5 text-primary" />
+                : <Copy className="size-3.5 text-muted-foreground/60" />
+              }
+            </button>
+          </div>
         </div>
-        <button
-          onClick={handleCopyText}
-          className="shrink-0 p-1.5 rounded-md hover:bg-muted active:bg-muted transition-all mt-0.5"
-          title={t("copyToClipboard")}
-        >
-          {copied 
-            ? <Check className="size-3.5 text-primary" /> 
-            : <Copy className="size-3.5 text-muted-foreground/60" />
-          }
-        </button>
       </div>
     );
   }
