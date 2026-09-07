@@ -8,6 +8,7 @@
 import React from "react";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize, formatTime, getFileCategory } from "@/lib/format";
+import { copyImageToClipboard, ScreenshotClipboardError } from "@/lib/screenshot";
 import type { TransferItem } from "@/hooks/usePeerHost";
 import { useI18n } from "@/contexts/I18nContext";
 import {
@@ -51,6 +52,7 @@ interface TransferItemRowProps {
 export function TransferItemRow({ item }: TransferItemRowProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const [screenshotCopied, setScreenshotCopied] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>();
 
   useEffect(() => {
@@ -70,6 +72,23 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
       setCopied(true);
       toast.success(t("copiedToClipboard"));
       setTimeout(() => setCopied(false), 2000);
+    }
+  };
+
+  const handleCopyScreenshot = async () => {
+    if (!item.blob) return;
+
+    try {
+      await copyImageToClipboard(item.blob);
+      setScreenshotCopied(true);
+      toast.success(t("screenshotCopied"));
+      setTimeout(() => setScreenshotCopied(false), 2000);
+    } catch (error) {
+      if (error instanceof ScreenshotClipboardError && error.code === "unsupported") {
+        toast.error(t("screenshotCopyUnsupported"));
+      } else {
+        toast.error(t("screenshotCopyFailed"));
+      }
     }
   };
 
@@ -158,14 +177,24 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
           )}
           <div className="mt-1.5 flex items-center justify-end gap-1">
             {item.status === "done" && isReceived && item.blob && (
-              <button
-                onClick={handleDownload}
-                className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted transition-all"
-                title={t("saveScreenshot")}
-              >
-                <Download className="size-3.5" />
-                <span>{t("saveScreenshot")}</span>
-              </button>
+              <>
+                <button
+                  onClick={handleCopyScreenshot}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted transition-all"
+                  title={t("copyScreenshot")}
+                >
+                  {screenshotCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+                  <span>{screenshotCopied ? t("screenshotCopied") : t("copyScreenshot")}</span>
+                </button>
+                <button
+                  onClick={handleDownload}
+                  className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted transition-all"
+                  title={t("saveScreenshot")}
+                >
+                  <Download className="size-3.5" />
+                  <span>{t("saveScreenshot")}</span>
+                </button>
+              </>
             )}
             {item.status === "done" && !isReceived && <Check className="size-3.5 text-primary/60" />}
             {item.status === "error" && <AlertTriangle className="size-3.5 text-destructive" />}

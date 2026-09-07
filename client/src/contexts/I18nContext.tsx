@@ -59,6 +59,10 @@ const translations = {
     screenshotCancelled: "Screenshot cancelled",
     screenshotFailed: "Could not capture the screenshot",
     screenshotSent: "Screenshot sent",
+    copyScreenshot: "Copy image",
+    screenshotCopied: "Image copied",
+    screenshotCopyUnsupported: "Image clipboard is not supported; use Save screenshot instead",
+    screenshotCopyFailed: "Could not copy the image; use Save screenshot instead",
     saveScreenshot: "Save screenshot",
 
     // Transfer item
@@ -130,6 +134,10 @@ const translations = {
     screenshotCancelled: "已取消截图",
     screenshotFailed: "截图失败，请重试",
     screenshotSent: "截图已发送",
+    copyScreenshot: "复制图片",
+    screenshotCopied: "图片已复制",
+    screenshotCopyUnsupported: "当前浏览器不支持复制图片，请使用“保存截图”",
+    screenshotCopyFailed: "图片复制失败，请使用“保存截图”",
     saveScreenshot: "保存截图",
 
     // 传输项

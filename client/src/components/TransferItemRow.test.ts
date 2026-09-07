@@ -82,6 +82,7 @@ describe("conversation message layout", () => {
 
     expect(markup).toContain('alt="screenshotAlt"');
     expect(markup).toContain('src="data:image/png;base64,cG5n"');
+    expect(markup).toContain("copyScreenshot");
     expect(markup).toContain("saveScreenshot");
   });
 

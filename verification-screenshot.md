@@ -9,3 +9,7 @@ Unsupported browsers, denied permissions, and user cancellation are handled with
 ## Manual browser verification
 
 On a supported desktop browser, open the connected conversation, click **Capture screenshot**, choose a screen or window in the browser permission picker, and confirm that the sender sees a screenshot preview and transfer progress. On the second device, confirm that the received item becomes a screenshot preview with a **Save screenshot** action. On a mobile browser, use the same control if the browser exposes `getDisplayMedia`; otherwise the interface reports that screen capture is unsupported without interrupting file or text transfer.
+
+## Screenshot copy verification
+
+Completed received screenshots now show both **Copy image** and **Save screenshot** actions. Copy uses `navigator.clipboard.write()` with a PNG `ClipboardItem`. When the browser lacks image clipboard support or denies permission, the UI shows a bilingual fallback message and leaves the save action available. TypeScript, production build, and the full Vitest suite passed: 9 test files and 68 tests.

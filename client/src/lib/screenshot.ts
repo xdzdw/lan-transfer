@@ -1,4 +1,15 @@
 export type ScreenshotCaptureErrorCode = "unsupported" | "cancelled" | "failed";
+export type ScreenshotClipboardErrorCode = "unsupported" | "permission" | "failed";
+
+export class ScreenshotClipboardError extends Error {
+  readonly code: ScreenshotClipboardErrorCode;
+
+  constructor(code: ScreenshotClipboardErrorCode, message: string) {
+    super(message);
+    this.name = "ScreenshotClipboardError";
+    this.code = code;
+  }
+}
 
 export class ScreenshotCaptureError extends Error {
   readonly code: ScreenshotCaptureErrorCode;
@@ -7,6 +18,45 @@ export class ScreenshotCaptureError extends Error {
     super(message);
     this.name = "ScreenshotCaptureError";
     this.code = code;
+  }
+}
+
+export function isImageClipboardSupported(): boolean {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.clipboard &&
+    typeof navigator.clipboard.write === "function" &&
+    typeof ClipboardItem !== "undefined"
+  );
+}
+
+export async function copyImageToClipboard(blob: Blob): Promise<void> {
+  if (!isImageClipboardSupported()) {
+    throw new ScreenshotClipboardError(
+      "unsupported",
+      "Image clipboard is not supported in this browser."
+    );
+  }
+
+  try {
+    const mimeType = blob.type || "image/png";
+    await navigator.clipboard.write([
+      new ClipboardItem({ [mimeType]: blob }),
+    ]);
+  } catch (error) {
+    const name = error && typeof error === "object" && "name" in error
+      ? String(error.name)
+      : "";
+    if (name === "NotAllowedError" || name === "SecurityError") {
+      throw new ScreenshotClipboardError(
+        "permission",
+        "The browser denied image clipboard access."
+      );
+    }
+    throw new ScreenshotClipboardError(
+      "failed",
+      "The image could not be copied to the clipboard."
+    );
   }
 }
 
