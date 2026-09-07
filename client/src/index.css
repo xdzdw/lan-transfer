@@ -137,6 +137,42 @@
   }
 }
 
+.home-page-shell {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  overflow-y: auto;
+  padding: 2rem 1.25rem;
+}
+
+@media (min-height: 760px) {
+  .home-page-shell {
+    justify-content: center;
+  }
+}
+
+@media (max-height: 700px) {
+  .home-page-shell {
+    padding-top: 1rem;
+    padding-bottom: 1rem;
+  }
+
+  .home-page-title {
+    margin-bottom: 2rem;
+  }
+
+  .home-page-tech {
+    margin-top: 2rem;
+  }
+
+  .home-page-switcher {
+    margin-top: 1rem;
+  }
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 4px;

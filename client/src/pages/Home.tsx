@@ -204,7 +204,7 @@ export default function Home() {
 
   // Pre-connection state
   return (
-    <div className="min-h-screen min-h-[100dvh] flex flex-col items-center justify-center bg-background px-5">
+    <div className="home-page-shell bg-background">
       <div className="w-full max-w-xs">
         {/* Language switch - top right */}
         <div className="fixed top-4 right-4 z-50">
@@ -216,7 +216,7 @@ export default function Home() {
           initial={{ opacity: 0, y: -10 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.4 }}
-          className="text-center mb-14"
+          className="home-page-title text-center mb-14"
         >
           <div className="flex items-center justify-center gap-4 mb-4">
             <Monitor className="size-5 text-foreground/70" />
@@ -395,7 +395,7 @@ export default function Home() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.5 }}
-          className="mt-12"
+          className="home-page-tech mt-12"
         >
           <TechDetails />
         </motion.div>
@@ -405,7 +405,7 @@ export default function Home() {
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 0.6 }}
-          className="mt-6 text-center"
+          className="home-page-switcher mt-6 text-center"
         >
           <button
             onClick={handleSwitchMode}
