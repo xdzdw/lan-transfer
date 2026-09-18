@@ -22,6 +22,7 @@ import {
 } from "@/lib/screenshot";
 import { ScreenshotRegionSelector } from "@/components/ScreenshotRegionSelector";
 import {
+  readClipboardFiles,
   readTransferItems,
   type FolderTransferFile,
 } from "@/lib/folderTransfer";
@@ -282,13 +283,25 @@ export function TransferPanel({
   );
 
   const handlePaste = useCallback(
-    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    async (e: React.ClipboardEvent<HTMLElement>) => {
       const fileItems = Array.from(e.clipboardData.items).filter(
         item => item.kind === "file"
       );
-      if (fileItems.length === 0) return;
+      const clipboardFiles = Array.from(e.clipboardData.files || []);
+      if (fileItems.length === 0 && clipboardFiles.length === 0) return;
       e.preventDefault();
-      const entries = await readTransferItems(fileItems);
+      const itemEntries =
+        fileItems.length > 0 ? await readTransferItems(fileItems) : [];
+      let entries =
+        itemEntries.length > 0
+          ? itemEntries
+          : clipboardFiles.map(file => ({
+              file,
+              relativePath: file.name || "pasted-file",
+            }));
+      if (entries.length === 0 && fileItems.length > 0) {
+        entries = await readClipboardFiles();
+      }
       await sendTransferEntries(entries);
     },
     [sendTransferEntries]
@@ -301,6 +314,7 @@ export function TransferPanel({
       onDragLeave={handleDragLeave}
       onDragOver={handleDragOver}
       onDrop={handleDrop}
+      onPaste={handlePaste}
     >
       {pendingScreenshot && (
         <ScreenshotRegionSelector
@@ -429,7 +443,6 @@ export function TransferPanel({
               value={text}
               onChange={e => setText(e.target.value)}
               onKeyDown={handleKeyDown}
-              onPaste={handlePaste}
               placeholder={t("typeMessage")}
               rows={1}
               className={cn(

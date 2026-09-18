@@ -82,4 +82,37 @@ describe("TransferPanel screenshot control", () => {
     await waitFor(() => expect(onSendFile).toHaveBeenCalledWith(file));
     view.unmount();
   });
+
+  it("falls back to clipboardData.files when an item cannot expose its file", async () => {
+    const onSendFile = vi.fn();
+    const file = new File(["clipboard-file"], "clipboard-file.txt", {
+      type: "text/plain",
+    });
+    const unavailableItem = {
+      kind: "file",
+      type: file.type,
+      getAsFile: () => null,
+      getAsString: () => undefined,
+      webkitGetAsEntry: () => null,
+    } as unknown as DataTransferItem;
+    const view = render(
+      React.createElement(TransferPanel, {
+        items: [],
+        onSendText: vi.fn(),
+        onSendFile,
+        onSendFolder: vi.fn(),
+        onDisconnect: vi.fn(),
+        role: "host",
+        transportMode: "relay",
+      })
+    );
+
+    const textarea = view.container.querySelector("textarea");
+    fireEvent.paste(textarea!, {
+      clipboardData: { items: [unavailableItem], files: [file] },
+    });
+
+    await waitFor(() => expect(onSendFile).toHaveBeenCalledWith(file));
+    view.unmount();
+  });
 });

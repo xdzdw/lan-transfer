@@ -173,6 +173,44 @@ export async function readTransferItems(
   return result;
 }
 
+/**
+ * Some browsers expose pasted images/files only through the asynchronous
+ * Clipboard API. This is called from a user-triggered paste event, so the
+ * browser may allow the read without a separate interaction.
+ */
+export async function readClipboardFiles(): Promise<FolderTransferFile[]> {
+  if (
+    typeof navigator === "undefined" ||
+    !navigator.clipboard ||
+    typeof navigator.clipboard.read !== "function"
+  ) {
+    return [];
+  }
+
+  try {
+    const clipboardItems = await navigator.clipboard.read();
+    const result: FolderTransferFile[] = [];
+    for (const item of clipboardItems) {
+      const type = item.types.find(
+        candidate =>
+          candidate.startsWith("image/") ||
+          candidate === "application/pdf" ||
+          candidate === "application/zip" ||
+          candidate === "application/octet-stream"
+      );
+      if (!type) continue;
+      const blob = await item.getType(type);
+      const extension = type.split("/")[1]?.replace("jpeg", "jpg") || "bin";
+      const file = new File([blob], `pasted-file.${extension}`, { type });
+      result.push({ file, relativePath: file.name });
+    }
+    return result;
+  } catch {
+    // Clipboard permission or format errors should not break text pasting.
+    return [];
+  }
+}
+
 interface WritableFileLike {
   write: (data: Blob) => Promise<void>;
   close: () => Promise<void>;
