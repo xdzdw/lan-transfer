@@ -150,17 +150,7 @@ export function TransferItemRow({ item, allItems = [] }: TransferItemRowProps) {
         error instanceof FolderSaveError &&
         error.code === "unsupported"
       ) {
-        for (const file of folderFiles) {
-          const url = URL.createObjectURL(file.blob);
-          const a = document.createElement("a");
-          a.href = url;
-          a.download = file.name;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-          URL.revokeObjectURL(url);
-        }
-        toast.info(t("folderSaveFallback"));
+        toast.error(t("folderSaveUnsupported"));
       } else {
         toast.error(t("folderSaveFailed"));
       }

@@ -72,6 +72,10 @@ export function scrollConversationToLatest(
   });
 }
 
+export function isVisibleConversationItem(item: TransferItem): boolean {
+  return !item.folderId;
+}
+
 function TransportBadge({ mode }: { mode: TransportMode }) {
   const { t } = useI18n();
 
@@ -122,11 +126,13 @@ export function TransferPanel({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
+  const visibleItems = items.filter(isVisibleConversationItem);
 
-  // Keep the newest conversation item visible whenever a new item arrives.
+  // Keep the newest visible conversation item in view. Folder children stay
+  // hidden and update only their single folder summary message.
   useEffect(() => {
     scrollConversationToLatest(scrollRef.current);
-  }, [items.length]);
+  }, [visibleItems.length]);
 
   const handleSendText = useCallback(() => {
     const trimmed = text.trim();
@@ -433,7 +439,7 @@ export function TransferPanel({
 
       {/* Transfer history */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto px-4">
-        {items.length === 0 ? (
+        {visibleItems.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full py-16 text-muted-foreground">
             <FileUp className="size-7 mb-4 opacity-30" />
             <p className="text-sm font-medium">{t("readyToTransfer")}</p>
@@ -443,7 +449,7 @@ export function TransferPanel({
           </div>
         ) : (
           <div className="py-1">
-            {items.map(item => (
+            {visibleItems.map(item => (
               <motion.div
                 key={item.id}
                 initial={{ opacity: 0, y: 6 }}

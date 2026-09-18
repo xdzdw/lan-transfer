@@ -95,11 +95,12 @@ const translations = {
     copyToClipboard: "Copy to clipboard",
     saveFile: "Save file",
     folderFiles: "files",
-    saveFolder: "Save folder",
+    saveFolder: "Save entire folder",
     folderSaved: "Folder saved",
     folderSaveCancelled: "Folder saving cancelled",
-    folderSaveFallback:
-      "Folder saving is not supported; individual files were downloaded",
+    folderSaveFallback: "Folder saving is not supported",
+    folderSaveUnsupported:
+      "Use Chrome or Edge to save the complete folder without a ZIP file",
     folderSaveFailed: "Could not save the folder",
 
     // 404
@@ -190,10 +191,12 @@ const translations = {
     copyToClipboard: "复制到剪贴板",
     saveFile: "保存文件",
     folderFiles: "个文件",
-    saveFolder: "保存文件夹",
+    saveFolder: "保存整个文件夹",
     folderSaved: "文件夹已保存",
     folderSaveCancelled: "已取消保存文件夹",
-    folderSaveFallback: "当前浏览器不支持保存文件夹，已改为分别下载文件",
+    folderSaveFallback: "当前浏览器不支持保存文件夹",
+    folderSaveUnsupported:
+      "请使用 Chrome 或 Edge 直接保存完整文件夹，无需 ZIP 解压",
     folderSaveFailed: "文件夹保存失败",
 
     // 404

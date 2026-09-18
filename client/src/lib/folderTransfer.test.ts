@@ -134,7 +134,10 @@ describe("folder transfer helpers", () => {
       })),
     });
 
-    const picker = vi.fn(async () => makeDirectory("destination"));
+    const picker = vi.fn(async function (this: unknown) {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return makeDirectory("destination");
+    });
     Object.defineProperty(globalThis, "showDirectoryPicker", {
       configurable: true,
       value: picker,

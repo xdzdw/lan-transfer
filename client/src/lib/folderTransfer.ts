@@ -257,8 +257,8 @@ export async function saveFolderToDirectory(
   items: FolderSaveItem[],
   folderName: string
 ): Promise<void> {
-  const picker = (globalThis as unknown as DirectoryPickerWindow)
-    .showDirectoryPicker;
+  const pickerWindow = globalThis as unknown as DirectoryPickerWindow;
+  const picker = pickerWindow.showDirectoryPicker;
   if (!picker) {
     throw new FolderSaveError(
       "unsupported",
@@ -268,7 +268,7 @@ export async function saveFolderToDirectory(
 
   let destination: DirectoryHandleLike;
   try {
-    destination = await picker({ mode: "readwrite" });
+    destination = await picker.call(pickerWindow, { mode: "readwrite" });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       throw new FolderSaveError("cancelled", "Folder saving was cancelled");

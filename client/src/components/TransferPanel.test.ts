@@ -28,9 +28,47 @@ vi.mock("@/contexts/I18nContext", () => ({
   }),
 }));
 
-import { TransferPanel } from "./TransferPanel";
+import { isVisibleConversationItem, TransferPanel } from "./TransferPanel";
+import type { TransferItem } from "@/hooks/usePeerHost";
 
 describe("TransferPanel screenshot control", () => {
+  it("shows a folder as one conversation message and hides its child files", () => {
+    const folder = {
+      id: "folder-1",
+      type: "folder",
+      direction: "received",
+      name: "Project",
+      status: "transferring",
+      timestamp: Date.now(),
+    } as TransferItem;
+    const child = {
+      id: "file-1",
+      type: "file",
+      direction: "received",
+      name: "secret-child-name.txt",
+      folderId: "folder-1",
+      status: "transferring",
+      timestamp: Date.now(),
+    } as TransferItem;
+
+    expect(isVisibleConversationItem(folder)).toBe(true);
+    expect(isVisibleConversationItem(child)).toBe(false);
+
+    const markup = renderToStaticMarkup(
+      React.createElement(TransferPanel, {
+        items: [folder, child],
+        onSendText: vi.fn(),
+        onSendFile: vi.fn(),
+        onSendFolder: vi.fn(),
+        onDisconnect: vi.fn(),
+        role: "client",
+        transportMode: "relay",
+      })
+    );
+    expect(markup).toContain("Project");
+    expect(markup).not.toContain("secret-child-name.txt");
+  });
+
   it("renders a labeled screenshot capture button beside file attachment", () => {
     const markup = renderToStaticMarkup(
       React.createElement(TransferPanel, {
