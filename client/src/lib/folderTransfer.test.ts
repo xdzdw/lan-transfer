@@ -44,6 +44,22 @@ describe("folder transfer helpers", () => {
     expect(result).toEqual([{ file, relativePath: "hello.txt" }]);
   });
 
+  it("keeps the native DataTransferItem binding when reading an entry", async () => {
+    const file = new File(["bound"], "bound.txt", { type: "text/plain" });
+    const item = {
+      kind: "file",
+      getAsFile: () => file,
+      webkitGetAsEntry(this: unknown) {
+        if (this !== item) throw new TypeError("Illegal invocation");
+        return null;
+      },
+    } as unknown as DataTransferItem;
+
+    await expect(readTransferItems([item])).resolves.toEqual([
+      { file, relativePath: "bound.txt" },
+    ]);
+  });
+
   it("recursively reads a dropped directory and preserves relative paths", async () => {
     const topFile = new File(["top"], "top.txt");
     const nestedFile = new File(["nested"], "nested.txt");

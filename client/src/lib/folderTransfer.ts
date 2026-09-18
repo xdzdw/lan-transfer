@@ -151,12 +151,15 @@ export async function readTransferItems(
     if (rawItem.kind !== "file") continue;
 
     const item = rawItem as DataTransferItemWithEntry;
-    const getEntry = (
-      item as unknown as {
-        webkitGetAsEntry?: () => FileSystemEntryLike | null;
-      }
-    ).webkitGetAsEntry;
-    const entry = getEntry?.();
+    let entry: FileSystemEntryLike | null = null;
+    try {
+      // Native DataTransferItem methods require their original `this` binding.
+      // Calling an extracted webkitGetAsEntry reference throws "Illegal invocation"
+      // in Chromium and previously aborted both drag/drop and clipboard paste.
+      entry = item.webkitGetAsEntry?.call(item) ?? null;
+    } catch {
+      entry = null;
+    }
     if (entry) {
       try {
         result.push(...(await readEntry(entry)));

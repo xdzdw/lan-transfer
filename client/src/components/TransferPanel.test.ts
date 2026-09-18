@@ -115,4 +115,30 @@ describe("TransferPanel screenshot control", () => {
     await waitFor(() => expect(onSendFile).toHaveBeenCalledWith(file));
     view.unmount();
   });
+
+  it("sends a dropped file when the browser exposes only dataTransfer.files", async () => {
+    const onSendFile = vi.fn();
+    const file = new File(["dropped-file"], "dropped-file.txt", {
+      type: "text/plain",
+    });
+    const view = render(
+      React.createElement(TransferPanel, {
+        items: [],
+        onSendText: vi.fn(),
+        onSendFile,
+        onSendFolder: vi.fn(),
+        onDisconnect: vi.fn(),
+        role: "host",
+        transportMode: "relay",
+      })
+    );
+
+    const panel = view.container.firstElementChild as HTMLElement;
+    fireEvent.drop(panel, {
+      dataTransfer: { items: [], files: [file], types: ["Files"] },
+    });
+
+    await waitFor(() => expect(onSendFile).toHaveBeenCalledWith(file));
+    view.unmount();
+  });
 });

@@ -276,10 +276,27 @@ export function TransferPanel({
       dragCounterRef.current = 0;
       setIsDragOver(false);
 
-      const entries = await readTransferItems(Array.from(e.dataTransfer.items));
-      await sendTransferEntries(entries);
+      try {
+        const itemEntries = await readTransferItems(
+          Array.from(e.dataTransfer.items || [])
+        );
+        const entries =
+          itemEntries.length > 0
+            ? itemEntries
+            : Array.from(e.dataTransfer.files || []).map(file => ({
+                file,
+                relativePath: file.name,
+              }));
+        if (entries.length === 0) {
+          toast.error(t("fileReadFailed"));
+          return;
+        }
+        await sendTransferEntries(entries);
+      } catch {
+        toast.error(t("fileSendFailed"));
+      }
     },
-    [sendTransferEntries]
+    [sendTransferEntries, t]
   );
 
   const handlePaste = useCallback(
@@ -290,21 +307,29 @@ export function TransferPanel({
       const clipboardFiles = Array.from(e.clipboardData.files || []);
       if (fileItems.length === 0 && clipboardFiles.length === 0) return;
       e.preventDefault();
-      const itemEntries =
-        fileItems.length > 0 ? await readTransferItems(fileItems) : [];
-      let entries =
-        itemEntries.length > 0
-          ? itemEntries
-          : clipboardFiles.map(file => ({
-              file,
-              relativePath: file.name || "pasted-file",
-            }));
-      if (entries.length === 0 && fileItems.length > 0) {
-        entries = await readClipboardFiles();
+      try {
+        const itemEntries =
+          fileItems.length > 0 ? await readTransferItems(fileItems) : [];
+        let entries =
+          itemEntries.length > 0
+            ? itemEntries
+            : clipboardFiles.map(file => ({
+                file,
+                relativePath: file.name || "pasted-file",
+              }));
+        if (entries.length === 0 && fileItems.length > 0) {
+          entries = await readClipboardFiles();
+        }
+        if (entries.length === 0) {
+          toast.error(t("fileReadFailed"));
+          return;
+        }
+        await sendTransferEntries(entries);
+      } catch {
+        toast.error(t("fileSendFailed"));
       }
-      await sendTransferEntries(entries);
     },
-    [sendTransferEntries]
+    [sendTransferEntries, t]
   );
 
   return (
