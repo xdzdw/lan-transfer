@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ScreenshotRegionSelector } from "./ScreenshotRegionSelector";
 
 vi.mock("@/contexts/I18nContext", () => ({
   useI18n: () => ({ t: (key: string) => key }),
 }));
+
+afterEach(cleanup);
 
 describe("ScreenshotRegionSelector DOM interaction", () => {
   beforeEach(() => {
@@ -22,20 +24,34 @@ describe("ScreenshotRegionSelector DOM interaction", () => {
   });
 
   it("enables and preserves confirmation after bottom-right pointer release", () => {
-    const file = new File(["fake-png"], "screenshot.png", { type: "image/png" });
+    const file = new File(["fake-png"], "screenshot.png", {
+      type: "image/png",
+    });
     render(
       <ScreenshotRegionSelector
         file={file}
         onConfirm={vi.fn()}
         onCancel={vi.fn()}
-      />,
+      />
     );
 
     const image = screen.getByRole("img");
-    Object.defineProperty(image, "clientWidth", { configurable: true, value: 400 });
-    Object.defineProperty(image, "clientHeight", { configurable: true, value: 300 });
-    Object.defineProperty(image, "naturalWidth", { configurable: true, value: 800 });
-    Object.defineProperty(image, "naturalHeight", { configurable: true, value: 600 });
+    Object.defineProperty(image, "clientWidth", {
+      configurable: true,
+      value: 400,
+    });
+    Object.defineProperty(image, "clientHeight", {
+      configurable: true,
+      value: 300,
+    });
+    Object.defineProperty(image, "naturalWidth", {
+      configurable: true,
+      value: 800,
+    });
+    Object.defineProperty(image, "naturalHeight", {
+      configurable: true,
+      value: 600,
+    });
     vi.spyOn(image, "getBoundingClientRect").mockReturnValue({
       x: 0,
       y: 0,
@@ -53,16 +69,44 @@ describe("ScreenshotRegionSelector DOM interaction", () => {
     surface.hasPointerCapture = vi.fn(() => true);
     surface.releasePointerCapture = vi.fn();
 
-    const confirmButton = screen.getByRole("button", { name: "useSelectedRegion" });
+    const confirmButton = screen.getByRole("button", {
+      name: "useSelectedRegion",
+    });
     expect((confirmButton as HTMLButtonElement).disabled).toBe(true);
 
     fireEvent.pointerDown(surface, { pointerId: 1, clientX: 40, clientY: 30 });
-    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 260, clientY: 190 });
+    fireEvent.pointerMove(surface, {
+      pointerId: 1,
+      clientX: 260,
+      clientY: 190,
+    });
     fireEvent.pointerUp(surface, { pointerId: 1, clientX: 360, clientY: 270 });
 
     expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.pointerMove(surface, { pointerId: 1, clientX: 399, clientY: 299 });
+    fireEvent.pointerMove(surface, {
+      pointerId: 1,
+      clientX: 399,
+      clientY: 299,
+    });
     expect((confirmButton as HTMLButtonElement).disabled).toBe(false);
     expect(surface.releasePointerCapture).toHaveBeenCalledWith(1);
+  });
+
+  it("sends the original full screenshot without requiring a region", () => {
+    const file = new File(["full-screen"], "screenshot.png", {
+      type: "image/png",
+    });
+    const onConfirm = vi.fn();
+    render(
+      <ScreenshotRegionSelector
+        file={file}
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "sendFullScreenshot" }));
+
+    expect(onConfirm).toHaveBeenCalledWith(file);
   });
 });
