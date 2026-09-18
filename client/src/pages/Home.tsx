@@ -1,6 +1,6 @@
 /**
  * Home Page — Quick Transfer
- * 
+ *
  * Design: Swiss Utility — Functional Minimalism
  * - Pure white background, near-black text, single teal accent
  * - Oversized monospace token as visual anchor
@@ -39,7 +39,11 @@ function RichText({ text }: { text: string }) {
       {parts.map((part, i) => {
         const match = part.match(/^<mono>(.*)<\/mono>$/);
         if (match) {
-          return <span key={i} className="font-mono font-medium text-foreground">{match[1]}</span>;
+          return (
+            <span key={i} className="font-mono font-medium text-foreground">
+              {match[1]}
+            </span>
+          );
         }
         return <span key={i}>{part}</span>;
       })}
@@ -55,7 +59,11 @@ function TechRichText({ text }: { text: string }) {
       {parts.map((part, i) => {
         const match = part.match(/^<mono>(.*)<\/mono>$/);
         if (match) {
-          return <span key={i} className="font-mono text-muted-foreground/80">{match[1]}</span>;
+          return (
+            <span key={i} className="font-mono text-muted-foreground/80">
+              {match[1]}
+            </span>
+          );
         }
         return <span key={i}>{part}</span>;
       })}
@@ -137,7 +145,10 @@ export default function Home() {
 
   const handleTokenPaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
-    const pasted = e.clipboardData.getData("text").replace(/\D/g, "").slice(0, 4);
+    const pasted = e.clipboardData
+      .getData("text")
+      .replace(/\D/g, "")
+      .slice(0, 4);
     if (pasted.length > 0) {
       const newToken = ["", "", "", ""];
       for (let i = 0; i < pasted.length; i++) {
@@ -173,8 +184,10 @@ export default function Home() {
 
   // Connected or reconnecting state — show transfer panel
   if (
-    (mode === "host" && (host.status === "connected" || host.status === "reconnecting")) ||
-    (mode === "client" && (client.status === "connected" || client.status === "reconnecting"))
+    (mode === "host" &&
+      (host.status === "connected" || host.status === "reconnecting")) ||
+    (mode === "client" &&
+      (client.status === "connected" || client.status === "reconnecting"))
   ) {
     return (
       <div className="h-screen h-[100dvh] flex flex-col bg-background">
@@ -183,6 +196,7 @@ export default function Home() {
             items={mode === "host" ? host.items : client.items}
             onSendText={mode === "host" ? host.sendText : client.sendText}
             onSendFile={mode === "host" ? host.sendFile : client.sendFile}
+            onSendFolder={mode === "host" ? host.sendFolder : client.sendFolder}
             onDisconnect={() => {
               if (mode === "host") {
                 host.disconnect();
@@ -193,8 +207,14 @@ export default function Home() {
               }
             }}
             role={mode === "host" ? "host" : "client"}
-            transportMode={mode === "host" ? host.transportMode : client.transportMode}
-            isReconnecting={mode === "host" ? host.status === "reconnecting" : client.status === "reconnecting"}
+            transportMode={
+              mode === "host" ? host.transportMode : client.transportMode
+            }
+            isReconnecting={
+              mode === "host"
+                ? host.status === "reconnecting"
+                : client.status === "reconnecting"
+            }
             roomCode={mode === "host" ? host.token : undefined}
           />
         </div>
@@ -223,9 +243,15 @@ export default function Home() {
             <ArrowLeftRight className="size-3.5 text-primary" />
             <Smartphone className="size-5 text-foreground/70" />
           </div>
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">Quick Transfer</h1>
-          <h2 className="text-sm text-muted-foreground mt-1.5 font-medium">{t("subtitle")}</h2>
-          <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">p22p.me</p>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">
+            Quick Transfer
+          </h1>
+          <h2 className="text-sm text-muted-foreground mt-1.5 font-medium">
+            {t("subtitle")}
+          </h2>
+          <p className="text-[11px] text-muted-foreground/60 mt-1 font-mono tracking-wide">
+            p22p.me
+          </p>
         </motion.div>
 
         <AnimatePresence mode="wait">
@@ -240,7 +266,11 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {host.status === "waiting" ? t("waitingForConnection") : host.status === "reconnecting" ? t("reconnecting") : t("initializing")}
+                {host.status === "waiting"
+                  ? t("waitingForConnection")
+                  : host.status === "reconnecting"
+                    ? t("reconnecting")
+                    : t("initializing")}
               </p>
 
               {/* Token display */}
@@ -252,14 +282,18 @@ export default function Home() {
                         key={`${host.token}-${i}`}
                         initial={{ opacity: 0, y: 16 }}
                         animate={{ opacity: 1, y: 0 }}
-                        transition={{ delay: i * 0.08, duration: 0.35, ease: "easeOut" }}
+                        transition={{
+                          delay: i * 0.08,
+                          duration: 0.35,
+                          ease: "easeOut",
+                        }}
                         className="text-[4.5rem] leading-none font-mono font-semibold text-foreground tabular-nums select-all"
                       >
                         {digit}
                       </motion.span>
                     ))}
                   </div>
-                  
+
                   {/* Breathing indicator */}
                   <motion.div
                     initial={{ opacity: 0 }}
@@ -291,7 +325,10 @@ export default function Home() {
                 >
                   <AlertCircle className="size-3.5 shrink-0" />
                   <span>{host.error}</span>
-                  <button onClick={handleRetry} className="ml-1 underline underline-offset-2 hover:text-destructive/80">
+                  <button
+                    onClick={handleRetry}
+                    className="ml-1 underline underline-offset-2 hover:text-destructive/80"
+                  >
                     {t("retry")}
                   </button>
                 </motion.div>
@@ -315,23 +352,29 @@ export default function Home() {
             >
               {/* Status label */}
               <p className="text-[10px] font-mono uppercase tracking-[0.2em] text-muted-foreground mb-8">
-                {client.status === "connecting" ? t("connecting") : client.status === "reconnecting" ? t("reconnecting") : t("enterCodeFromPC")}
+                {client.status === "connecting"
+                  ? t("connecting")
+                  : client.status === "reconnecting"
+                    ? t("reconnecting")
+                    : t("enterCodeFromPC")}
               </p>
 
               {/* Token input */}
               <div className="flex items-center justify-center gap-4 mb-10">
-                {[0, 1, 2, 3].map((i) => (
+                {[0, 1, 2, 3].map(i => (
                   <div key={i} className="relative">
                     <input
-                      ref={(el) => { inputRefs.current[i] = el; }}
+                      ref={el => {
+                        inputRefs.current[i] = el;
+                      }}
                       type="text"
                       inputMode="numeric"
                       pattern="[0-9]*"
                       autoComplete="one-time-code"
                       maxLength={1}
                       value={tokenInput[i]}
-                      onChange={(e) => handleTokenInputChange(i, e.target.value)}
-                      onKeyDown={(e) => handleTokenKeyDown(i, e)}
+                      onChange={e => handleTokenInputChange(i, e.target.value)}
+                      onKeyDown={e => handleTokenKeyDown(i, e)}
                       onPaste={i === 0 ? handleTokenPaste : undefined}
                       disabled={client.status === "connecting"}
                       className={cn(
@@ -355,7 +398,9 @@ export default function Home() {
                   className="flex items-center justify-center gap-2 mb-6"
                 >
                   <Loader2 className="size-3.5 animate-spin text-primary" />
-                  <span className="text-xs font-mono text-muted-foreground">{t("connectingDots")}</span>
+                  <span className="text-xs font-mono text-muted-foreground">
+                    {t("connectingDots")}
+                  </span>
                 </motion.div>
               )}
 
@@ -382,9 +427,7 @@ export default function Home() {
 
               {/* Instructions */}
               {client.status !== "connecting" && !client.error && (
-                <p className="text-xs text-muted-foreground">
-                  {t("lookAtPC")}
-                </p>
+                <p className="text-xs text-muted-foreground">{t("lookAtPC")}</p>
               )}
             </motion.div>
           )}
@@ -423,8 +466,12 @@ export default function Home() {
 function Step({ num, text }: { num: number; text: React.ReactNode }) {
   return (
     <div className="flex items-start gap-3">
-      <span className="text-sm font-mono text-muted-foreground/60 mt-0.5 shrink-0 w-5 text-right">{num}</span>
-      <span className="text-sm text-muted-foreground leading-relaxed">{text}</span>
+      <span className="text-sm font-mono text-muted-foreground/60 mt-0.5 shrink-0 w-5 text-right">
+        {num}
+      </span>
+      <span className="text-sm text-muted-foreground leading-relaxed">
+        {text}
+      </span>
     </div>
   );
 }
@@ -441,7 +488,12 @@ function TechDetails() {
       >
         <Shield className="size-3" />
         <span>{t("noFilesStored")}</span>
-        <ChevronDown className={cn("size-3 transition-transform duration-200", open && "rotate-180")} />
+        <ChevronDown
+          className={cn(
+            "size-3 transition-transform duration-200",
+            open && "rotate-180"
+          )}
+        />
       </button>
 
       <AnimatePresence>
@@ -455,15 +507,23 @@ function TechDetails() {
           >
             <div className="mt-4 mx-auto max-w-[280px] text-left space-y-2.5 text-[11px] text-muted-foreground/60 leading-relaxed">
               <div className="flex gap-2">
-                <span className="font-mono text-primary/60 shrink-0 mt-px">WSS</span>
-                <span><TechRichText text={t("techWSS")} /></span>
+                <span className="font-mono text-primary/60 shrink-0 mt-px">
+                  WSS
+                </span>
+                <span>
+                  <TechRichText text={t("techWSS")} />
+                </span>
               </div>
               <div className="flex gap-2">
-                <span className="font-mono text-primary/60 shrink-0 mt-px">MEM</span>
+                <span className="font-mono text-primary/60 shrink-0 mt-px">
+                  MEM
+                </span>
                 <span>{t("techMEM")}</span>
               </div>
               <div className="flex gap-2">
-                <span className="font-mono text-primary/60 shrink-0 mt-px">TTL</span>
+                <span className="font-mono text-primary/60 shrink-0 mt-px">
+                  TTL
+                </span>
                 <span>{t("techTTL")}</span>
               </div>
               <div className="mt-3 pt-2.5 border-t border-border/30 text-[10px] font-mono text-muted-foreground/40">

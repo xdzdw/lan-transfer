@@ -86,9 +86,55 @@ describe("conversation message layout", () => {
     expect(markup).toContain("saveScreenshot");
   });
 
+  it("renders a folder summary with its file count and save action", () => {
+    const folder = {
+      id: "folder-1",
+      type: "folder",
+      direction: "received",
+      name: "Photos",
+      folderFileCount: 2,
+      folderTotalSize: 12,
+      timestamp: Date.now(),
+      status: "done",
+    } as TransferItem;
+    const children = [
+      {
+        ...textItem,
+        id: "file-1",
+        type: "file",
+        name: "one.txt",
+        folderId: "folder-1",
+        blob: new Blob(["one"]),
+        status: "done",
+      },
+      {
+        ...textItem,
+        id: "file-2",
+        type: "file",
+        name: "two.txt",
+        folderId: "folder-1",
+        blob: new Blob(["two"]),
+        status: "done",
+      },
+    ] as unknown as TransferItem[];
+    const markup = renderToStaticMarkup(
+      React.createElement(TransferItemRow, {
+        item: folder,
+        allItems: [folder, ...children],
+      })
+    );
+
+    expect(markup).toContain("Photos");
+    expect(markup).toContain("2 folderFiles");
+    expect(markup).toContain("saveFolder");
+  });
+
   it("scrolls the conversation container to the newest item", () => {
     const scrollTo = vi.fn();
-    const container = { scrollHeight: 640, scrollTo } as unknown as HTMLDivElement;
+    const container = {
+      scrollHeight: 640,
+      scrollTo,
+    } as unknown as HTMLDivElement;
 
     scrollConversationToLatest(container);
 

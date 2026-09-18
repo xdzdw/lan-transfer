@@ -1,9 +1,9 @@
 /**
  * TransferPanel — The main transfer interface shown after connection
- * 
+ *
  * Design: Swiss Utility — clean vertical layout, text input at bottom,
  * file drop zone covers the entire panel, transfer history scrolls above.
- * 
+ *
  * Now includes transport mode indicator (P2P / Relay / Upgrading)
  */
 
@@ -15,8 +15,16 @@ import type { TransferItem } from "@/hooks/usePeerHost";
 import type { TransportMode } from "@/lib/webrtc";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
-import { captureScreenshot, isScreenshotCaptureSupported, ScreenshotCaptureError } from "@/lib/screenshot";
+import {
+  captureScreenshot,
+  isScreenshotCaptureSupported,
+  ScreenshotCaptureError,
+} from "@/lib/screenshot";
 import { ScreenshotRegionSelector } from "@/components/ScreenshotRegionSelector";
+import {
+  readTransferItems,
+  type FolderTransferFile,
+} from "@/lib/folderTransfer";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   ArrowUpFromLine,
@@ -31,6 +39,7 @@ import {
   Globe,
   Loader2,
   Camera,
+  FolderOpen,
 } from "lucide-react";
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -38,7 +47,11 @@ import { toast } from "sonner";
 interface TransferPanelProps {
   items: TransferItem[];
   onSendText: (text: string) => void;
-  onSendFile: (file: File, options?: { isScreenshot?: boolean }) => void | Promise<void>;
+  onSendFile: (
+    file: File,
+    options?: { isScreenshot?: boolean }
+  ) => void | Promise<void>;
+  onSendFolder: (files: FolderTransferFile[]) => void | Promise<void>;
   onDisconnect: () => void;
   role: "host" | "client";
   transportMode: TransportMode;
@@ -87,13 +100,24 @@ function TransportBadge({ mode }: { mode: TransportMode }) {
   );
 }
 
-export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, role, transportMode, isReconnecting, roomCode }: TransferPanelProps) {
+export function TransferPanel({
+  items,
+  onSendText,
+  onSendFile,
+  onSendFolder,
+  onDisconnect,
+  role,
+  transportMode,
+  isReconnecting,
+  roomCode,
+}: TransferPanelProps) {
   const { t } = useI18n();
   const [text, setText] = useState("");
   const [isDragOver, setIsDragOver] = useState(false);
   const [isCapturingScreenshot, setIsCapturingScreenshot] = useState(false);
   const [pendingScreenshot, setPendingScreenshot] = useState<File | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const folderInputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const dragCounterRef = useRef(0);
@@ -111,12 +135,15 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
     textareaRef.current?.focus();
   }, [text, onSendText]);
 
-  const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      handleSendText();
-    }
-  }, [handleSendText]);
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        handleSendText();
+      }
+    },
+    [handleSendText]
+  );
 
   const handleCaptureScreenshot = useCallback(async () => {
     if (!isScreenshotCaptureSupported()) {
@@ -129,9 +156,15 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
       const screenshot = await captureScreenshot();
       setPendingScreenshot(screenshot);
     } catch (error) {
-      if (error instanceof ScreenshotCaptureError && error.code === "cancelled") {
+      if (
+        error instanceof ScreenshotCaptureError &&
+        error.code === "cancelled"
+      ) {
         toast.info(t("screenshotCancelled"));
-      } else if (error instanceof ScreenshotCaptureError && error.code === "black") {
+      } else if (
+        error instanceof ScreenshotCaptureError &&
+        error.code === "black"
+      ) {
         toast.error(t("screenshotBlackFrame"));
       } else {
         toast.error(t("screenshotFailed"));
@@ -141,17 +174,20 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
     }
   }, [onSendFile, t]);
 
-  const handleScreenshotConfirm = useCallback(async (screenshot: File) => {
-    try {
-      await onSendFile(screenshot, { isScreenshot: true });
-      toast.success(t("screenshotSent"));
-    } catch {
-      toast.error(t("screenshotFailed"));
-    } finally {
-      setPendingScreenshot(null);
-      setIsCapturingScreenshot(false);
-    }
-  }, [onSendFile, t]);
+  const handleScreenshotConfirm = useCallback(
+    async (screenshot: File) => {
+      try {
+        await onSendFile(screenshot, { isScreenshot: true });
+        toast.success(t("screenshotSent"));
+      } catch {
+        toast.error(t("screenshotFailed"));
+      } finally {
+        setPendingScreenshot(null);
+        setIsCapturingScreenshot(false);
+      }
+    },
+    [onSendFile, t]
+  );
 
   const handleScreenshotCancel = useCallback(() => {
     setPendingScreenshot(null);
@@ -159,15 +195,55 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
     toast.info(t("screenshotCancelled"));
   }, [t]);
 
-  const handleFileSelect = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (files) {
-      Array.from(files).forEach(file => onSendFile(file));
-    }
-    if (fileInputRef.current) {
-      fileInputRef.current.value = "";
-    }
-  }, [onSendFile]);
+  const handleFileSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (files)
+        void Promise.all(Array.from(files).map(file => onSendFile(file)));
+      if (fileInputRef.current) {
+        fileInputRef.current.value = "";
+      }
+    },
+    [onSendFile]
+  );
+
+  const handleFolderSelect = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files;
+      if (files) {
+        const entries = Array.from(files).map(file => ({
+          file,
+          relativePath:
+            (file as File & { webkitRelativePath?: string })
+              .webkitRelativePath || file.name,
+        }));
+        void onSendFolder(entries);
+      }
+      if (folderInputRef.current) folderInputRef.current.value = "";
+    },
+    [onSendFolder]
+  );
+
+  const sendTransferEntries = useCallback(
+    async (entries: FolderTransferFile[]) => {
+      if (entries.length === 0) return;
+      const isFolder = entries.some(entry => entry.relativePath.includes("/"));
+      if (isFolder) {
+        const groups = new Map<string, FolderTransferFile[]>();
+        for (const entry of entries) {
+          const root = entry.relativePath.split("/")[0] || entry.file.name;
+          const group = groups.get(root) || [];
+          group.push(entry);
+          groups.set(root, group);
+        }
+        for (const group of Array.from(groups.values()))
+          await onSendFolder(group);
+        return;
+      }
+      for (const entry of entries) await onSendFile(entry.file);
+    },
+    [onSendFile, onSendFolder]
+  );
 
   const handleDragEnter = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -192,17 +268,31 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
     e.stopPropagation();
   }, []);
 
-  const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    dragCounterRef.current = 0;
-    setIsDragOver(false);
-    
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      Array.from(files).forEach(file => onSendFile(file));
-    }
-  }, [onSendFile]);
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      dragCounterRef.current = 0;
+      setIsDragOver(false);
+
+      const entries = await readTransferItems(Array.from(e.dataTransfer.items));
+      await sendTransferEntries(entries);
+    },
+    [sendTransferEntries]
+  );
+
+  const handlePaste = useCallback(
+    async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const fileItems = Array.from(e.clipboardData.items).filter(
+        item => item.kind === "file"
+      );
+      if (fileItems.length === 0) return;
+      e.preventDefault();
+      const entries = await readTransferItems(fileItems);
+      await sendTransferEntries(entries);
+    },
+    [sendTransferEntries]
+  );
 
   return (
     <div
@@ -232,7 +322,9 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
           >
             <div className="flex flex-col items-center gap-3">
               <ArrowUpFromLine className="size-7 text-primary" />
-              <span className="text-sm font-medium text-primary">{t("dropToSend")}</span>
+              <span className="text-sm font-medium text-primary">
+                {t("dropToSend")}
+              </span>
             </div>
           </motion.div>
         )}
@@ -242,7 +334,9 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
       {isReconnecting && (
         <div className="flex items-center justify-center gap-2 px-4 py-2 bg-amber-500/10 border-b border-amber-500/20 shrink-0">
           <Loader2 className="size-3 animate-spin text-amber-600" />
-          <span className="text-[11px] font-mono text-amber-700">{t("reconnectingHint")}</span>
+          <span className="text-[11px] font-mono text-amber-700">
+            {t("reconnectingHint")}
+          </span>
         </div>
       )}
 
@@ -260,16 +354,26 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
             )}
           </span>
           <div className="flex items-center gap-1.5 text-muted-foreground">
-            {role === "host" ? <Monitor className="size-3.5" /> : <Smartphone className="size-3.5" />}
+            {role === "host" ? (
+              <Monitor className="size-3.5" />
+            ) : (
+              <Smartphone className="size-3.5" />
+            )}
             <ArrowLeftRight className="size-2.5" />
-            {role === "host" ? <Smartphone className="size-3.5" /> : <Monitor className="size-3.5" />}
+            {role === "host" ? (
+              <Smartphone className="size-3.5" />
+            ) : (
+              <Monitor className="size-3.5" />
+            )}
           </div>
           <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">
             {t("connected")}
           </span>
           {roomCode && (
             <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-foreground/5 border border-foreground/10">
-              <span className="text-[11px] font-mono font-bold tracking-[0.15em] text-foreground">{roomCode}</span>
+              <span className="text-[11px] font-mono font-bold tracking-[0.15em] text-foreground">
+                {roomCode}
+              </span>
             </span>
           )}
           <TransportBadge mode={transportMode} />
@@ -285,7 +389,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
           </button>
         </div>
       </div>
-      
+
       <Separator />
 
       {/* Transfer history */}
@@ -307,7 +411,7 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ duration: 0.2 }}
               >
-                <TransferItemRow item={item} />
+                <TransferItemRow item={item} allItems={items} />
               </motion.div>
             ))}
           </div>
@@ -323,8 +427,9 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
             <textarea
               ref={textareaRef}
               value={text}
-              onChange={(e) => setText(e.target.value)}
+              onChange={e => setText(e.target.value)}
               onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
               placeholder={t("typeMessage")}
               rows={1}
               className={cn(
@@ -340,6 +445,17 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
               className="hidden"
               onChange={handleFileSelect}
             />
+            <input
+              ref={folderInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={handleFolderSelect}
+              {...({
+                webkitdirectory: "",
+                directory: "",
+              } as React.InputHTMLAttributes<HTMLInputElement>)}
+            />
             <button
               type="button"
               onClick={handleCaptureScreenshot}
@@ -348,7 +464,20 @@ export function TransferPanel({ items, onSendText, onSendFile, onDisconnect, rol
               title={t("captureScreenshot")}
               aria-label={t("captureScreenshot")}
             >
-              {isCapturingScreenshot ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
+              {isCapturingScreenshot ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Camera className="size-4" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => folderInputRef.current?.click()}
+              className="absolute right-[4.5rem] bottom-2.5 p-1 rounded hover:bg-muted transition-colors text-muted-foreground/50 hover:text-muted-foreground"
+              title={t("attachFolder")}
+              aria-label={t("attachFolder")}
+            >
+              <FolderOpen className="size-4" />
             </button>
             <button
               type="button"

@@ -1,4 +1,11 @@
-import { createContext, useCallback, useContext, useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 
 export type Lang = "en" | "zh";
 
@@ -29,10 +36,14 @@ const translations = {
 
     // Privacy / tech details
     noFilesStored: "No files stored on server",
-    techWSS: "Devices connect via <mono>WebSocket (wss://)</mono> for signaling. When possible, <mono>WebRTC</mono> establishes a direct P2P connection for faster transfers on the same network.",
-    techMEM: "Files stream through server memory only. Zero disk writes, zero database storage. Data exists in transit, never at rest.",
-    techTTL: "Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.",
-    techFooter: "Protocol: WSS + WebRTC · Chunk size: 64KB · No logs · No analytics on content",
+    techWSS:
+      "Devices connect via <mono>WebSocket (wss://)</mono> for signaling. When possible, <mono>WebRTC</mono> establishes a direct P2P connection for faster transfers on the same network.",
+    techMEM:
+      "Files stream through server memory only. Zero disk writes, zero database storage. Data exists in transit, never at rest.",
+    techTTL:
+      "Sessions are ephemeral. Room destroyed on disconnect. Stale rooms auto-purge after 30 min.",
+    techFooter:
+      "Protocol: WSS + WebRTC · Chunk size: 64KB · No logs · No analytics on content",
 
     // Reconnection
     reconnecting: "Reconnecting...",
@@ -47,23 +58,28 @@ const translations = {
     connected: "Connected",
     end: "End",
     readyToTransfer: "Ready to transfer",
-    dragFilesHere: "Drag files here or type below",
-    sendTextOrAttach: "Send text or attach files below",
-    dropToSend: "Drop files to send",
-    typeMessage: "Type a message...",
+    dragFilesHere: "Drag files or folders here, or type below",
+    sendTextOrAttach: "Send text, paste files, or attach below",
+    dropToSend: "Drop files or folders to send",
+    typeMessage: "Type a message or paste files...",
     attachFile: "Attach file",
+    attachFolder: "Attach folder",
+    pasteFilesHint: "Paste files or images here to send",
     captureScreenshot: "Capture screenshot",
     screenshot: "Screenshot",
     screenshotAlt: "Screenshot preview",
     screenshotUnsupported: "Screen capture is not supported in this browser",
     screenshotCancelled: "Screenshot cancelled",
     screenshotFailed: "Could not capture the screenshot",
-    screenshotBlackFrame: "The selected window returned a black image. Try selecting a tab or screen, or disable protected content.",
+    screenshotBlackFrame:
+      "The selected window returned a black image. Try selecting a tab or screen, or disable protected content.",
     screenshotSent: "Screenshot sent",
     copyScreenshot: "Copy image",
     screenshotCopied: "Image copied",
-    screenshotCopyUnsupported: "Image clipboard is not supported; use Save screenshot instead",
-    screenshotCopyFailed: "Could not copy the image; use Save screenshot instead",
+    screenshotCopyUnsupported:
+      "Image clipboard is not supported; use Save screenshot instead",
+    screenshotCopyFailed:
+      "Could not copy the image; use Save screenshot instead",
     selectScreenshotRegion: "Select screenshot area",
     selectScreenshotRegionHint: "Drag over the area you want to send",
     cancelScreenshot: "Cancel screenshot",
@@ -75,6 +91,13 @@ const translations = {
     downloadStarted: "Download started",
     copyToClipboard: "Copy to clipboard",
     saveFile: "Save file",
+    folderFiles: "files",
+    saveFolder: "Save folder",
+    folderSaved: "Folder saved",
+    folderSaveCancelled: "Folder saving cancelled",
+    folderSaveFallback:
+      "Folder saving is not supported; individual files were downloaded",
+    folderSaveFailed: "Could not save the folder",
 
     // 404
     pageNotFound: "Page not found",
@@ -109,8 +132,10 @@ const translations = {
 
     // 隐私 / 技术细节
     noFilesStored: "服务器不存储任何文件",
-    techWSS: "设备通过 <mono>WebSocket (wss://)</mono> 进行信令连接。尽可能使用 <mono>WebRTC</mono> 建立 P2P 直连，同网络传输更快。",
-    techMEM: "文件仅通过服务器内存流转。零磁盘写入，零数据库存储。数据仅在传输中存在，不会持久保存。",
+    techWSS:
+      "设备通过 <mono>WebSocket (wss://)</mono> 进行信令连接。尽可能使用 <mono>WebRTC</mono> 建立 P2P 直连，同网络传输更快。",
+    techMEM:
+      "文件仅通过服务器内存流转。零磁盘写入，零数据库存储。数据仅在传输中存在，不会持久保存。",
     techTTL: "会话是临时的。断开连接后房间即销毁。闲置房间30分钟后自动清除。",
     techFooter: "协议: WSS + WebRTC · 分块大小: 64KB · 无日志 · 不分析传输内容",
 
@@ -127,18 +152,21 @@ const translations = {
     connected: "已连接",
     end: "断开",
     readyToTransfer: "准备传输",
-    dragFilesHere: "拖拽文件到此处或在下方输入",
-    sendTextOrAttach: "在下方发送文字或添加文件",
-    dropToSend: "松开以发送文件",
-    typeMessage: "输入消息...",
+    dragFilesHere: "拖拽文件或文件夹到此处，或在下方输入",
+    sendTextOrAttach: "发送文字、粘贴文件，或在下方添加文件",
+    dropToSend: "松开以发送文件或文件夹",
+    typeMessage: "输入消息或粘贴文件...",
     attachFile: "添加文件",
+    attachFolder: "添加文件夹",
+    pasteFilesHint: "可在此粘贴文件或图片发送",
     captureScreenshot: "截取屏幕并发送",
     screenshot: "屏幕截图",
     screenshotAlt: "截图预览",
     screenshotUnsupported: "当前浏览器不支持屏幕截图",
     screenshotCancelled: "已取消截图",
     screenshotFailed: "截图失败，请重试",
-    screenshotBlackFrame: "选中的窗口返回了黑屏，请改选标签页或整个屏幕，并关闭受保护内容",
+    screenshotBlackFrame:
+      "选中的窗口返回了黑屏，请改选标签页或整个屏幕，并关闭受保护内容",
     screenshotSent: "截图已发送",
     copyScreenshot: "复制图片",
     screenshotCopied: "图片已复制",
@@ -155,6 +183,12 @@ const translations = {
     downloadStarted: "开始下载",
     copyToClipboard: "复制到剪贴板",
     saveFile: "保存文件",
+    folderFiles: "个文件",
+    saveFolder: "保存文件夹",
+    folderSaved: "文件夹已保存",
+    folderSaveCancelled: "已取消保存文件夹",
+    folderSaveFallback: "当前浏览器不支持保存文件夹，已改为分别下载文件",
+    folderSaveFailed: "文件夹保存失败",
 
     // 404
     pageNotFound: "页面未找到",

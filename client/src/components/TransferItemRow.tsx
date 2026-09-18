@@ -1,6 +1,6 @@
 /**
  * TransferItemRow — Displays a single transfer item (text or file)
- * 
+ *
  * Design: Swiss Utility — compact horizontal row, monospace metadata,
  * no cards, just content separated by thin borders.
  */
@@ -8,7 +8,11 @@
 import React from "react";
 import { Progress } from "@/components/ui/progress";
 import { formatFileSize, formatTime, getFileCategory } from "@/lib/format";
-import { copyImageToClipboard, ScreenshotClipboardError } from "@/lib/screenshot";
+import {
+  copyImageToClipboard,
+  ScreenshotClipboardError,
+} from "@/lib/screenshot";
+import { saveFolderToDirectory, FolderSaveError } from "@/lib/folderTransfer";
 import type { TransferItem } from "@/hooks/usePeerHost";
 import { useI18n } from "@/contexts/I18nContext";
 import {
@@ -23,6 +27,7 @@ import {
   FileAudio,
   FileCode,
   FileImage,
+  Folder,
   FileText,
   FileVideo,
   Loader2,
@@ -33,26 +38,35 @@ import { toast } from "sonner";
 function FileIcon({ name, className }: { name: string; className?: string }) {
   const category = getFileCategory(name);
   const props = { className: className || "size-4" };
-  
+
   switch (category) {
-    case "image": return <FileImage {...props} />;
-    case "video": return <FileVideo {...props} />;
-    case "audio": return <FileAudio {...props} />;
-    case "document": return <FileText {...props} />;
-    case "archive": return <FileArchive {...props} />;
-    case "code": return <FileCode {...props} />;
-    default: return <File {...props} />;
+    case "image":
+      return <FileImage {...props} />;
+    case "video":
+      return <FileVideo {...props} />;
+    case "audio":
+      return <FileAudio {...props} />;
+    case "document":
+      return <FileText {...props} />;
+    case "archive":
+      return <FileArchive {...props} />;
+    case "code":
+      return <FileCode {...props} />;
+    default:
+      return <File {...props} />;
   }
 }
 
 interface TransferItemRowProps {
   item: TransferItem;
+  allItems?: TransferItem[];
 }
 
-export function TransferItemRow({ item }: TransferItemRowProps) {
+export function TransferItemRow({ item, allItems = [] }: TransferItemRowProps) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
   const [screenshotCopied, setScreenshotCopied] = useState(false);
+  const [folderSaving, setFolderSaving] = useState(false);
   const [previewUrl, setPreviewUrl] = useState<string>();
 
   useEffect(() => {
@@ -84,7 +98,10 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
       toast.success(t("screenshotCopied"));
       setTimeout(() => setScreenshotCopied(false), 2000);
     } catch (error) {
-      if (error instanceof ScreenshotClipboardError && error.code === "unsupported") {
+      if (
+        error instanceof ScreenshotClipboardError &&
+        error.code === "unsupported"
+      ) {
         toast.error(t("screenshotCopyUnsupported"));
       } else {
         toast.error(t("screenshotCopyFailed"));
@@ -106,16 +123,131 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
     }
   };
 
+  const handleSaveFolder = async () => {
+    const folderFiles = allItems
+      .filter(
+        child =>
+          child.type === "file" &&
+          child.folderId === item.id &&
+          child.status === "done" &&
+          child.blob
+      )
+      .map(child => ({
+        blob: child.blob as Blob,
+        name: child.name,
+        relativePath: child.relativePath,
+      }));
+    if (folderFiles.length === 0) return;
+
+    setFolderSaving(true);
+    try {
+      await saveFolderToDirectory(folderFiles, item.name);
+      toast.success(t("folderSaved"));
+    } catch (error) {
+      if (error instanceof FolderSaveError && error.code === "cancelled") {
+        toast.info(t("folderSaveCancelled"));
+      } else if (
+        error instanceof FolderSaveError &&
+        error.code === "unsupported"
+      ) {
+        for (const file of folderFiles) {
+          const url = URL.createObjectURL(file.blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.name;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+        }
+        toast.info(t("folderSaveFallback"));
+      } else {
+        toast.error(t("folderSaveFailed"));
+      }
+    } finally {
+      setFolderSaving(false);
+    }
+  };
+
   const isReceived = item.direction === "received";
+
+  if (item.type === "folder") {
+    const folderFiles = allItems.filter(
+      child => child.type === "file" && child.folderId === item.id
+    );
+    const completedFiles = folderFiles.filter(
+      child => child.status === "done"
+    ).length;
+    const canSave =
+      isReceived &&
+      item.status === "done" &&
+      folderFiles.length > 0 &&
+      folderFiles.every(child => !!child.blob);
+
+    return (
+      <div className="flex items-center gap-3 py-3.5 border-b border-border/40 last:border-0">
+        <div className="shrink-0">
+          {isReceived ? (
+            <ArrowDown className="size-3 text-primary" />
+          ) : (
+            <ArrowUp className="size-3 text-muted-foreground/50" />
+          )}
+        </div>
+        <Folder className="size-4 shrink-0 text-primary/70" />
+        <div className="flex-1 min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="text-[13px] font-medium truncate text-foreground/90">
+              {item.name}
+            </span>
+            <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">
+              {item.folderFileCount || folderFiles.length} {t("folderFiles")}
+            </span>
+          </div>
+          {item.status === "transferring" && (
+            <div className="mt-2 flex items-center gap-2">
+              <Progress value={item.progress || 0} className="h-[3px] flex-1" />
+              <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">
+                {item.progress || 0}%
+              </span>
+            </div>
+          )}
+          <span className="text-[10px] font-mono text-muted-foreground/50 mt-1 block">
+            {item.status === "done"
+              ? `${completedFiles}/${item.folderFileCount || folderFiles.length} · ${formatFileSize(item.folderTotalSize || 0)}`
+              : formatTime(item.timestamp)}
+          </span>
+        </div>
+        {canSave && (
+          <button
+            onClick={handleSaveFolder}
+            disabled={folderSaving}
+            className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted disabled:opacity-50 transition-all"
+            title={t("saveFolder")}
+          >
+            {folderSaving ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <Download className="size-3.5" />
+            )}
+            <span>{t("saveFolder")}</span>
+          </button>
+        )}
+        {item.status === "error" && (
+          <AlertTriangle className="size-3.5 text-destructive" />
+        )}
+      </div>
+    );
+  }
 
   if (item.type === "text") {
     return (
       <div className="group flex items-start gap-3 py-3.5 border-b border-border/40 last:border-0">
         <div className="shrink-0 mt-0.5">
-          {isReceived 
-            ? <ArrowDown className="size-3 text-primary" /> 
-            : <ArrowUp className="size-3 text-muted-foreground/50" />
-          }
+          {isReceived ? (
+            <ArrowDown className="size-3 text-primary" />
+          ) : (
+            <ArrowUp className="size-3 text-muted-foreground/50" />
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <p className="text-[13px] leading-relaxed break-words whitespace-pre-wrap text-foreground/90">
@@ -130,10 +262,11 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
               className="shrink-0 -mr-1 p-1.5 rounded-md hover:bg-muted active:bg-muted transition-all"
               title={t("copyToClipboard")}
             >
-              {copied
-                ? <Check className="size-3.5 text-primary" />
-                : <Copy className="size-3.5 text-muted-foreground/60" />
-              }
+              {copied ? (
+                <Check className="size-3.5 text-primary" />
+              ) : (
+                <Copy className="size-3.5 text-muted-foreground/60" />
+              )}
             </button>
           </div>
         </div>
@@ -147,14 +280,20 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
     return (
       <div className="group flex items-start gap-3 py-3.5 border-b border-border/40 last:border-0">
         <div className="shrink-0 mt-1">
-          {isReceived
-            ? <ArrowDown className="size-3 text-primary" />
-            : <ArrowUp className="size-3 text-muted-foreground/50" />}
+          {isReceived ? (
+            <ArrowDown className="size-3 text-primary" />
+          ) : (
+            <ArrowUp className="size-3 text-muted-foreground/50" />
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2 mb-1.5">
-            <span className="text-[11px] font-medium text-foreground/80">{t("screenshot")}</span>
-            <span className="text-[10px] font-mono text-muted-foreground/50">{formatTime(item.timestamp)}</span>
+            <span className="text-[11px] font-medium text-foreground/80">
+              {t("screenshot")}
+            </span>
+            <span className="text-[10px] font-mono text-muted-foreground/50">
+              {formatTime(item.timestamp)}
+            </span>
           </div>
           {screenshotPreviewUrl ? (
             <img
@@ -166,13 +305,19 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
           ) : (
             <div className="flex h-16 items-center gap-2 rounded-md border border-dashed border-border/70 bg-muted/20 px-3 text-[11px] text-muted-foreground/60">
               <FileImage className="size-4" />
-              <span>{item.status === "transferring" ? `${item.progress || 0}%` : t("screenshot")}</span>
+              <span>
+                {item.status === "transferring"
+                  ? `${item.progress || 0}%`
+                  : t("screenshot")}
+              </span>
             </div>
           )}
           {item.status === "transferring" && (
             <div className="mt-2 flex items-center gap-2">
               <Progress value={item.progress || 0} className="h-[3px] flex-1" />
-              <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">{item.progress || 0}%</span>
+              <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">
+                {item.progress || 0}%
+              </span>
             </div>
           )}
           <div className="mt-1.5 flex items-center justify-end gap-1">
@@ -183,8 +328,16 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
                   className="inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[10px] text-primary hover:bg-muted transition-all"
                   title={t("copyScreenshot")}
                 >
-                  {screenshotCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-                  <span>{screenshotCopied ? t("screenshotCopied") : t("copyScreenshot")}</span>
+                  {screenshotCopied ? (
+                    <Check className="size-3.5" />
+                  ) : (
+                    <Copy className="size-3.5" />
+                  )}
+                  <span>
+                    {screenshotCopied
+                      ? t("screenshotCopied")
+                      : t("copyScreenshot")}
+                  </span>
                 </button>
                 <button
                   onClick={handleDownload}
@@ -196,8 +349,12 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
                 </button>
               </>
             )}
-            {item.status === "done" && !isReceived && <Check className="size-3.5 text-primary/60" />}
-            {item.status === "error" && <AlertTriangle className="size-3.5 text-destructive" />}
+            {item.status === "done" && !isReceived && (
+              <Check className="size-3.5 text-primary/60" />
+            )}
+            {item.status === "error" && (
+              <AlertTriangle className="size-3.5 text-destructive" />
+            )}
           </div>
         </div>
       </div>
@@ -208,21 +365,32 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
   return (
     <div className="group flex items-center gap-3 py-3.5 border-b border-border/40 last:border-0">
       <div className="shrink-0">
-        {isReceived 
-          ? <ArrowDown className="size-3 text-primary" /> 
-          : <ArrowUp className="size-3 text-muted-foreground/50" />
-        }
+        {isReceived ? (
+          <ArrowDown className="size-3 text-primary" />
+        ) : (
+          <ArrowUp className="size-3 text-muted-foreground/50" />
+        )}
       </div>
       <div className="shrink-0 text-muted-foreground/60">
         <FileIcon name={item.name} className="size-4" />
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline gap-2">
-          <span className="text-[13px] font-medium truncate text-foreground/90">{item.name}</span>
+          <span className="text-[13px] font-medium truncate text-foreground/90">
+            {item.name}
+          </span>
           <span className="text-[10px] font-mono text-muted-foreground/50 shrink-0">
             {item.size ? formatFileSize(item.size) : ""}
           </span>
         </div>
+        {item.relativePath && (
+          <span
+            className="block truncate text-[10px] font-mono text-muted-foreground/50 mt-1"
+            title={item.relativePath}
+          >
+            {item.relativePath}
+          </span>
+        )}
         {item.status === "transferring" && (
           <div className="mt-2">
             <Progress value={item.progress || 0} className="h-[3px]" />
@@ -238,7 +406,9 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
         {item.status === "transferring" && (
           <div className="flex items-center gap-1.5">
             <Loader2 className="size-3 animate-spin text-primary" />
-            <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">{item.progress}%</span>
+            <span className="text-[10px] font-mono text-muted-foreground/60 tabular-nums">
+              {item.progress}%
+            </span>
           </div>
         )}
         {item.status === "done" && isReceived && item.blob && (
@@ -251,9 +421,15 @@ export function TransferItemRow({ item }: TransferItemRowProps) {
             <button
               onClick={handleDownload}
               className="p-1.5 rounded-md hover:bg-muted transition-all"
-              title={item.sizeMismatch ? "File may be incomplete - download anyway" : t("saveFile")}
+              title={
+                item.sizeMismatch
+                  ? "File may be incomplete - download anyway"
+                  : t("saveFile")
+              }
             >
-              <Download className={`size-3.5 ${item.sizeMismatch ? "text-amber-500" : "text-primary"}`} />
+              <Download
+                className={`size-3.5 ${item.sizeMismatch ? "text-amber-500" : "text-primary"}`}
+              />
             </button>
           </div>
         )}
