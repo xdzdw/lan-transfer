@@ -8,6 +8,8 @@ vi.mock("@/contexts/I18nContext", () => ({
       ({
         copyToClipboard: "Copy to clipboard",
         copiedToClipboard: "Copied to clipboard",
+        relayFileTooLarge: "Relay limit is {limit}",
+        fileSendFailed: "File transfer failed",
       })[key] ?? key,
   }),
 }));
@@ -127,6 +129,28 @@ describe("conversation message layout", () => {
     expect(markup).toContain("Photos");
     expect(markup).toContain("2 folderFiles");
     expect(markup).toContain("saveFolder");
+  });
+
+  it("explains relay-limit failures on both file and folder messages", () => {
+    for (const type of ["file", "folder"] as const) {
+      const item: TransferItem = {
+        id: `limited-${type}`,
+        type,
+        direction: "received",
+        name: "too-large",
+        timestamp: Date.now(),
+        status: "error",
+        errorCode: "RELAY_FILE_TOO_LARGE",
+        relayLimitBytes: 10 * 1024 * 1024,
+      };
+      const markup = renderToStaticMarkup(
+        React.createElement(TransferItemRow, { item })
+      );
+      expect(markup).toContain('role="alert"');
+      expect(markup).toContain("Relay limit is 10 MB");
+      expect(markup).not.toContain('title="saveFolder"');
+      expect(markup).not.toContain('title="saveFile"');
+    }
   });
 
   it("scrolls the conversation container to the newest item", () => {

@@ -53,6 +53,11 @@ const translations = {
     upgrading: "Upgrading",
     relay: "Relay",
     p2pDirect: "P2P Direct",
+    turnRelay: "TURN Relay",
+    relayFileSizeHint:
+      "Relay: ordinary files up to {limit} per transfer. Text, images and screenshots are exempt; direct P2P files are not limited.",
+    relayFileTooLarge:
+      "This transfer requires a relay. Ordinary files are limited to {limit} per file or folder. Use a direct P2P connection for larger files; text and images are exempt.",
 
     // Transfer panel
     connected: "Connected",
@@ -151,6 +156,11 @@ const translations = {
     upgrading: "升级中",
     relay: "中继",
     p2pDirect: "P2P 直连",
+    turnRelay: "TURN 中继",
+    relayFileSizeHint:
+      "中继模式：普通文件或文件夹每次最多 {limit}。文字、图片、截图不限，P2P 直连文件不限。",
+    relayFileTooLarge:
+      "当前传输需要走中继，普通文件或文件夹每次最多 {limit}。较大文件请使用 P2P 直连；文字和图片不受此限制。",
 
     // 传输面板
     connected: "已连接",

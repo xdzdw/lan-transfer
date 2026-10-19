@@ -1,13 +1,13 @@
 /**
  * WebRTC DataChannel transport layer for Quick Transfer
- * 
+ *
  * This module handles:
  * 1. Creating RTCPeerConnection with STUN servers (China-accessible)
  * 2. SDP offer/answer exchange via WebSocket signaling
  * 3. ICE candidate exchange via WebSocket signaling (with buffering)
  * 4. DataChannel creation and management
  * 5. Connection state monitoring with stability (no premature fallback)
- * 
+ *
  * Key stability improvements:
  * - "disconnected" state is TEMPORARY — we wait before falling back
  * - Only "failed" triggers immediate fallback
@@ -52,8 +52,11 @@ const TURN_SERVERS: RTCIceServer[] = [
 
 function getIceServers(): RTCIceServer[] {
   const storedLang =
-    typeof localStorage !== "undefined" ? localStorage.getItem("qt-lang") : null;
-  const browserLang = typeof navigator !== "undefined" ? navigator.language || "" : "";
+    typeof localStorage !== "undefined"
+      ? localStorage.getItem("qt-lang")
+      : null;
+  const browserLang =
+    typeof navigator !== "undefined" ? navigator.language || "" : "";
   const lang = storedLang || browserLang;
   const isChinese = lang === "zh" || lang.startsWith("zh");
 
@@ -75,7 +78,14 @@ function getIceServers(): RTCIceServer[] {
 const RTC_TIMEOUT_MS = 15000; // 15 seconds to establish WebRTC (increased for slow STUN)
 const DISCONNECT_GRACE_MS = 10000; // 10 seconds grace period for "disconnected" state
 
-export type TransportMode = "p2p" | "relay" | "upgrading";
+/**
+ * `turn` means that the DataChannel is open, but its selected ICE pair is a
+ * TURN relay pair rather than a direct peer-to-peer pair.
+ */
+export type TransportMode = "p2p" | "turn" | "relay" | "upgrading";
+
+/** The selected ICE route, kept separately from UI-facing connection state. */
+export type SelectedTransportPath = "p2p" | "turn" | "unknown";
 
 export interface WebRTCTransport {
   /** The RTCPeerConnection instance */
@@ -92,11 +102,238 @@ export interface WebRTCTransport {
   remoteDescriptionSet?: boolean;
   /** Buffered ICE candidates received before remote description was set */
   pendingCandidates?: RTCIceCandidateInit[];
+  /** Last positively identified selected ICE route. Unknown is fail-closed. */
+  selectedPath?: SelectedTransportPath;
+  /** Stats id of the selected candidate pair, when exposed by the browser. */
+  selectedCandidatePairId?: string;
+  /** Internal listener bookkeeping for selectedcandidatepairchange. */
+  selectedPathIceTransport?: {
+    removeEventListener?: (type: string, listener: EventListener) => void;
+  };
+  selectedPathChangeHandler?: EventListener;
+}
+
+type CandidateLike = {
+  candidateType?: string;
+  type?: string;
+};
+
+type IceTransportLike = {
+  getSelectedCandidatePair?: () => {
+    local?: CandidateLike;
+    remote?: CandidateLike;
+  } | null;
+  addEventListener?: (type: string, listener: EventListener) => void;
+  removeEventListener?: (type: string, listener: EventListener) => void;
+};
+
+type DtlsTransportLike = {
+  /** The SCTP transport first exposes DTLS; selected ICE state is nested here. */
+  iceTransport?: IceTransportLike | null;
+};
+
+type StatsLike = {
+  id?: string;
+  type?: string;
+  selectedCandidatePairId?: string;
+  localCandidateId?: string;
+  remoteCandidateId?: string;
+  candidateType?: string;
+};
+
+function getIceTransport(pc: RTCPeerConnection): IceTransportLike | null {
+  // A DataChannel's SCTP transport exposes a DTLS transport, whose
+  // `iceTransport` is the standard source of selected-pair state. Keep this
+  // defensive because older browsers omit SCTP or the nested object.
+  return (
+    (
+      pc as unknown as {
+        sctp?: { transport?: DtlsTransportLike | null } | null;
+      }
+    ).sctp?.transport?.iceTransport || null
+  );
+}
+
+function getPathFromCandidates(
+  local?: CandidateLike,
+  remote?: CandidateLike
+): SelectedTransportPath {
+  const localType = local?.candidateType || local?.type;
+  const remoteType = remote?.candidateType || remote?.type;
+
+  // One relay endpoint is enough to prove that this is a TURN path. Direct
+  // needs both endpoint types so an incomplete browser report never permits a
+  // potentially relayed oversized transfer.
+  if (localType === "relay" || remoteType === "relay") return "turn";
+  if (localType && remoteType) return "p2p";
+  return "unknown";
+}
+
+function getStandardSelectedPath(
+  transport: WebRTCTransport
+): SelectedTransportPath {
+  try {
+    const pair = getIceTransport(transport.pc)?.getSelectedCandidatePair?.();
+    return pair ? getPathFromCandidates(pair.local, pair.remote) : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
+function hasStandardSelectedPairApi(transport: WebRTCTransport): boolean {
+  try {
+    return (
+      typeof getIceTransport(transport.pc)?.getSelectedCandidatePair ===
+      "function"
+    );
+  } catch {
+    return false;
+  }
+}
+
+function getSelectedPathFromStats(stats: {
+  forEach: (callback: (report: StatsLike) => void) => void;
+}): { path: SelectedTransportPath; pairId?: string } {
+  const reports: StatsLike[] = [];
+  stats.forEach(report => reports.push(report));
+
+  // Do not infer selection from a `succeeded` candidate-pair. Several pairs
+  // may succeed; only the transport's selectedCandidatePairId is authoritative.
+  const selectedTransport = reports.find(
+    report =>
+      report.type === "transport" &&
+      typeof report.selectedCandidatePairId === "string"
+  );
+  const pairId = selectedTransport?.selectedCandidatePairId;
+  if (!pairId) return { path: "unknown" };
+
+  const pair = reports.find(
+    report => report.id === pairId && report.type === "candidate-pair"
+  );
+  if (!pair) return { path: "unknown" };
+
+  const local = reports.find(report => report.id === pair.localCandidateId);
+  const remote = reports.find(report => report.id === pair.remoteCandidateId);
+  return {
+    path: getPathFromCandidates(local, remote),
+    pairId,
+  };
+}
+
+/**
+ * Return a synchronous best-known route. The standard selected-pair API is
+ * queried every time; if a browser only exposes stats, use the last refreshed
+ * selected path. Call `refreshSelectedPath` before making a file decision when
+ * an async stats query is possible.
+ */
+export function getSelectedTransportPath(
+  transport: WebRTCTransport | null
+): SelectedTransportPath {
+  if (!transport) return "unknown";
+  const standardPath = getStandardSelectedPath(transport);
+  if (standardPath !== "unknown") {
+    transport.selectedPath = standardPath;
+    transport.selectedCandidatePairId = undefined;
+    return standardPath;
+  }
+  // If the standard API is available but reports no current pair, a cached
+  // direct path could describe a prior ICE route. Stats-only browsers retain
+  // their asynchronously refreshed cache because they lack this API entirely.
+  if (hasStandardSelectedPairApi(transport)) {
+    transport.selectedPath = "unknown";
+    transport.selectedCandidatePairId = undefined;
+    return "unknown";
+  }
+  return transport.selectedPath || "unknown";
+}
+
+/**
+ * Refresh the selected path from standard ICE APIs, then (where necessary)
+ * from the exact selectedCandidatePairId in RTC stats. This intentionally
+ * never treats an arbitrary succeeded pair as selected.
+ */
+export async function refreshSelectedPath(
+  transport: WebRTCTransport | null
+): Promise<SelectedTransportPath> {
+  if (!transport) return "unknown";
+
+  const standardPath = getStandardSelectedPath(transport);
+  if (standardPath !== "unknown") {
+    transport.selectedPath = standardPath;
+    transport.selectedCandidatePairId = undefined;
+    return standardPath;
+  }
+
+  try {
+    const stats = await transport.pc.getStats();
+    const selected = getSelectedPathFromStats(
+      stats as unknown as {
+        forEach: (callback: (report: StatsLike) => void) => void;
+      }
+    );
+    transport.selectedPath = selected.path;
+    transport.selectedCandidatePairId = selected.pairId;
+    return selected.path;
+  } catch {
+    // Clear stale state when selection can no longer be established: file
+    // sending must fail closed rather than mistake an old direct route for the
+    // current one.
+    transport.selectedPath = "unknown";
+    transport.selectedCandidatePairId = undefined;
+    return "unknown";
+  }
+}
+
+function refreshSelectedPathAfterNetworkChange(
+  transport: WebRTCTransport
+): void {
+  const standardPath = getStandardSelectedPath(transport);
+  if (standardPath !== "unknown") {
+    transport.selectedPath = standardPath;
+    transport.selectedCandidatePairId = undefined;
+  } else {
+    transport.selectedPath = "unknown";
+    transport.selectedCandidatePairId = undefined;
+  }
+  void refreshSelectedPath(transport);
+}
+
+function watchSelectedPath(transport: WebRTCTransport): void {
+  const iceTransport = getIceTransport(transport.pc);
+  if (
+    !iceTransport ||
+    !iceTransport.addEventListener ||
+    transport.selectedPathIceTransport === iceTransport
+  ) {
+    refreshSelectedPathAfterNetworkChange(transport);
+    return;
+  }
+
+  if (
+    transport.selectedPathIceTransport &&
+    transport.selectedPathChangeHandler
+  ) {
+    transport.selectedPathIceTransport.removeEventListener?.(
+      "selectedcandidatepairchange",
+      transport.selectedPathChangeHandler
+    );
+  }
+
+  const onSelectedPairChange: EventListener = () => {
+    refreshSelectedPathAfterNetworkChange(transport);
+  };
+  iceTransport.addEventListener(
+    "selectedcandidatepairchange",
+    onSelectedPairChange
+  );
+  transport.selectedPathIceTransport = iceTransport;
+  transport.selectedPathChangeHandler = onSelectedPairChange;
+  refreshSelectedPathAfterNetworkChange(transport);
 }
 
 /**
  * Create a WebRTC connection as the host (offerer).
- * 
+ *
  * @param ws - WebSocket for signaling
  * @param onOpen - Called when DataChannel is ready
  * @param onMessage - Called when data arrives on DataChannel
@@ -108,11 +345,15 @@ export function createHostRTC(
   onOpen: () => void,
   onMessage: (event: MessageEvent) => void,
   onClose: () => void,
-  onFail: () => void,
+  onFail: () => void
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: getIceServers() });
   let transport: WebRTCTransport = {
-    pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
+    pc,
+    dataChannel: null,
+    mode: "upgrading",
+    wasP2P: false,
+    close: () => {},
     remoteDescriptionSet: false,
     pendingCandidates: [],
   };
@@ -140,6 +381,7 @@ export function createHostRTC(
     }
     transport.mode = "p2p";
     transport.wasP2P = true;
+    watchSelectedPath(transport);
     console.log("[WebRTC Host] DataChannel open — P2P mode active");
     // Log ICE candidate pair info for debugging
     logSelectedCandidatePair(pc, "Host");
@@ -150,10 +392,12 @@ export function createHostRTC(
 
   dc.onclose = () => {
     const bufAmt = dc.bufferedAmount;
-    pushDebugLog(`[DC-CLOSE] Host DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`);
+    pushDebugLog(
+      `[DC-CLOSE] Host DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`
+    );
     console.log("[WebRTC Host] DataChannel closed");
     if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-      if (transport.mode === "p2p") {
+      if (transport.mode === "p2p" || transport.mode === "turn") {
         transport.mode = "relay";
         onClose();
       }
@@ -162,22 +406,30 @@ export function createHostRTC(
 
   dc.onerror = (e: Event) => {
     const rtcErr = e as RTCErrorEvent;
-    const errDetail = rtcErr.error ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}` : "unknown";
+    const errDetail = rtcErr.error
+      ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}`
+      : "unknown";
     const bufAmt = dc.bufferedAmount;
-    pushDebugLog(`[DC-ERR] Host DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`);
+    pushDebugLog(
+      `[DC-ERR] Host DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`
+    );
     console.error("[WebRTC Host] DataChannel error:", e);
   };
 
   // Send ICE candidates to client via WebSocket + log each candidate for diagnosis
-  pc.onicecandidate = (event) => {
+  pc.onicecandidate = event => {
     if (event.candidate) {
       const c = event.candidate;
-      pushDebugLog(`[ICE-CAND] Host local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`);
+      pushDebugLog(
+        `[ICE-CAND] Host local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`
+      );
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "rtc-ice",
-          candidate: c.toJSON(),
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "rtc-ice",
+            candidate: c.toJSON(),
+          })
+        );
       }
     } else {
       pushDebugLog(`[ICE-CAND] Host gathering complete (null candidate)`);
@@ -192,6 +444,7 @@ export function createHostRTC(
   // Log ICE connection state for more granular diagnosis
   pc.oniceconnectionstatechange = () => {
     pushDebugLog(`[ICE] Host iceConnection: ${pc.iceConnectionState}`);
+    refreshSelectedPathAfterNetworkChange(transport);
   };
 
   pc.onconnectionstatechange = () => {
@@ -204,7 +457,9 @@ export function createHostRTC(
       if (disconnectTimerId) {
         clearTimeout(disconnectTimerId);
         disconnectTimerId = null;
-        console.log("[WebRTC Host] Connection recovered from disconnected state");
+        console.log(
+          "[WebRTC Host] Connection recovered from disconnected state"
+        );
       }
     }
 
@@ -212,13 +467,20 @@ export function createHostRTC(
       // "disconnected" is TEMPORARY — WiFi jitter, brief network switch, etc.
       // Start a grace timer; only fall back if it doesn't recover
       if (!disconnectTimerId && transport.wasP2P) {
-        console.log("[WebRTC Host] Connection temporarily disconnected, waiting for recovery...");
+        console.log(
+          "[WebRTC Host] Connection temporarily disconnected, waiting for recovery..."
+        );
         disconnectTimerId = setTimeout(() => {
           disconnectTimerId = null;
           // Check again — it might have recovered during the grace period
-          if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
-            console.log("[WebRTC Host] Connection did not recover — falling back to relay");
-            if (transport.mode === "p2p") {
+          if (
+            pc.connectionState === "disconnected" ||
+            pc.connectionState === "failed"
+          ) {
+            console.log(
+              "[WebRTC Host] Connection did not recover — falling back to relay"
+            );
+            if (transport.mode === "p2p" || transport.mode === "turn") {
               transport.mode = "relay";
               onClose();
             }
@@ -243,9 +505,11 @@ export function createHostRTC(
         settled = true;
         clearTimeout(timeoutId);
         transport.mode = "relay";
-        pushDebugLog(`[P2P] WebRTC FAILED — ICE could not establish connection`);
+        pushDebugLog(
+          `[P2P] WebRTC FAILED — ICE could not establish connection`
+        );
         onFail();
-      } else if (transport.mode === "p2p") {
+      } else if (transport.mode === "p2p" || transport.mode === "turn") {
         transport.mode = "relay";
         onClose();
       }
@@ -254,17 +518,19 @@ export function createHostRTC(
 
   // Create offer
   pc.createOffer()
-    .then((offer) => pc.setLocalDescription(offer))
+    .then(offer => pc.setLocalDescription(offer))
     .then(() => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "rtc-offer",
-          sdp: pc.localDescription,
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "rtc-offer",
+            sdp: pc.localDescription,
+          })
+        );
         console.log("[WebRTC Host] Sent SDP offer");
       }
     })
-    .catch((err) => {
+    .catch(err => {
       console.error("[WebRTC Host] Failed to create offer:", err);
       if (!settled) {
         settled = true;
@@ -279,7 +545,9 @@ export function createHostRTC(
     if (!settled) {
       settled = true;
       console.log("[WebRTC Host] Timeout — falling back to relay");
-      pushDebugLog(`[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`);
+      pushDebugLog(
+        `[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`
+      );
       transport.mode = "relay";
       onFail();
     }
@@ -292,8 +560,21 @@ export function createHostRTC(
       clearTimeout(disconnectTimerId);
       disconnectTimerId = null;
     }
-    try { dc.close(); } catch {}
-    try { pc.close(); } catch {}
+    if (
+      transport.selectedPathIceTransport &&
+      transport.selectedPathChangeHandler
+    ) {
+      transport.selectedPathIceTransport.removeEventListener?.(
+        "selectedcandidatepairchange",
+        transport.selectedPathChangeHandler
+      );
+    }
+    try {
+      dc.close();
+    } catch {}
+    try {
+      pc.close();
+    } catch {}
   };
 
   return transport;
@@ -301,7 +582,7 @@ export function createHostRTC(
 
 /**
  * Create a WebRTC connection as the client (answerer).
- * 
+ *
  * @param ws - WebSocket for signaling
  * @param offer - SDP offer from host
  * @param onOpen - Called when DataChannel is ready
@@ -315,11 +596,15 @@ export function createClientRTC(
   onOpen: () => void,
   onMessage: (event: MessageEvent) => void,
   onClose: () => void,
-  onFail: () => void,
+  onFail: () => void
 ): WebRTCTransport {
   const pc = new RTCPeerConnection({ iceServers: getIceServers() });
   let transport: WebRTCTransport = {
-    pc, dataChannel: null, mode: "upgrading", wasP2P: false, close: () => {},
+    pc,
+    dataChannel: null,
+    mode: "upgrading",
+    wasP2P: false,
+    close: () => {},
     remoteDescriptionSet: false,
     pendingCandidates: [],
   };
@@ -328,7 +613,7 @@ export function createClientRTC(
   let disconnectTimerId: ReturnType<typeof setTimeout> | null = null;
 
   // Client receives DataChannel from host
-  pc.ondatachannel = (event) => {
+  pc.ondatachannel = event => {
     const dc = event.channel;
     dc.binaryType = "arraybuffer";
     // Set bufferedAmountLowThreshold for efficient back-pressure
@@ -345,6 +630,7 @@ export function createClientRTC(
       }
       transport.mode = "p2p";
       transport.wasP2P = true;
+      watchSelectedPath(transport);
       console.log("[WebRTC Client] DataChannel open — P2P mode active");
       // Log ICE candidate pair info for debugging
       logSelectedCandidatePair(pc, "Client");
@@ -355,10 +641,12 @@ export function createClientRTC(
 
     dc.onclose = () => {
       const bufAmt = dc.bufferedAmount;
-      pushDebugLog(`[DC-CLOSE] Client DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`);
+      pushDebugLog(
+        `[DC-CLOSE] Client DataChannel closed | buf=${(bufAmt / 1024).toFixed(0)}KB | pcState=${pc.connectionState}`
+      );
       console.log("[WebRTC Client] DataChannel closed");
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
-        if (transport.mode === "p2p") {
+        if (transport.mode === "p2p" || transport.mode === "turn") {
           transport.mode = "relay";
           onClose();
         }
@@ -367,23 +655,31 @@ export function createClientRTC(
 
     dc.onerror = (e: Event) => {
       const rtcErr = e as RTCErrorEvent;
-      const errDetail = rtcErr.error ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}` : "unknown";
+      const errDetail = rtcErr.error
+        ? `${rtcErr.error.errorDetail}: ${rtcErr.error.message}`
+        : "unknown";
       const bufAmt = dc.bufferedAmount;
-      pushDebugLog(`[DC-ERR] Client DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`);
+      pushDebugLog(
+        `[DC-ERR] Client DataChannel error: ${errDetail} | buf=${(bufAmt / 1024).toFixed(0)}KB | state=${dc.readyState}`
+      );
       console.error("[WebRTC Client] DataChannel error:", e);
     };
   };
 
   // Send ICE candidates to host via WebSocket + log each candidate for diagnosis
-  pc.onicecandidate = (event) => {
+  pc.onicecandidate = event => {
     if (event.candidate) {
       const c = event.candidate;
-      pushDebugLog(`[ICE-CAND] Client local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`);
+      pushDebugLog(
+        `[ICE-CAND] Client local: type=${c.type} addr=${c.address}:${c.port} proto=${c.protocol} raddr=${c.relatedAddress || "-"}:${c.relatedPort || "-"}`
+      );
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "rtc-ice",
-          candidate: c.toJSON(),
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "rtc-ice",
+            candidate: c.toJSON(),
+          })
+        );
       }
     } else {
       pushDebugLog(`[ICE-CAND] Client gathering complete (null candidate)`);
@@ -398,6 +694,7 @@ export function createClientRTC(
   // Log ICE connection state for more granular diagnosis
   pc.oniceconnectionstatechange = () => {
     pushDebugLog(`[ICE] Client iceConnection: ${pc.iceConnectionState}`);
+    refreshSelectedPathAfterNetworkChange(transport);
   };
 
   pc.onconnectionstatechange = () => {
@@ -409,18 +706,27 @@ export function createClientRTC(
       if (disconnectTimerId) {
         clearTimeout(disconnectTimerId);
         disconnectTimerId = null;
-        console.log("[WebRTC Client] Connection recovered from disconnected state");
+        console.log(
+          "[WebRTC Client] Connection recovered from disconnected state"
+        );
       }
     }
 
     if (state === "disconnected") {
       if (!disconnectTimerId && transport.wasP2P) {
-        console.log("[WebRTC Client] Connection temporarily disconnected, waiting for recovery...");
+        console.log(
+          "[WebRTC Client] Connection temporarily disconnected, waiting for recovery..."
+        );
         disconnectTimerId = setTimeout(() => {
           disconnectTimerId = null;
-          if (pc.connectionState === "disconnected" || pc.connectionState === "failed") {
-            console.log("[WebRTC Client] Connection did not recover — falling back to relay");
-            if (transport.mode === "p2p") {
+          if (
+            pc.connectionState === "disconnected" ||
+            pc.connectionState === "failed"
+          ) {
+            console.log(
+              "[WebRTC Client] Connection did not recover — falling back to relay"
+            );
+            if (transport.mode === "p2p" || transport.mode === "turn") {
               transport.mode = "relay";
               onClose();
             }
@@ -439,9 +745,11 @@ export function createClientRTC(
         settled = true;
         clearTimeout(timeoutId);
         transport.mode = "relay";
-        pushDebugLog(`[P2P] WebRTC FAILED — ICE could not establish connection`);
+        pushDebugLog(
+          `[P2P] WebRTC FAILED — ICE could not establish connection`
+        );
         onFail();
-      } else if (transport.mode === "p2p") {
+      } else if (transport.mode === "p2p" || transport.mode === "turn") {
         transport.mode = "relay";
         onClose();
       }
@@ -453,27 +761,35 @@ export function createClientRTC(
     .then(() => {
       transport.remoteDescriptionSet = true;
       // Flush any buffered ICE candidates
-      if (transport.pendingCandidates && transport.pendingCandidates.length > 0) {
-        pushDebugLog(`[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates`);
+      if (
+        transport.pendingCandidates &&
+        transport.pendingCandidates.length > 0
+      ) {
+        pushDebugLog(
+          `[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates`
+        );
         for (const candidate of transport.pendingCandidates) {
-          pc.addIceCandidate(new RTCIceCandidate(candidate))
-            .catch((err) => console.error("[WebRTC] Failed to add buffered ICE candidate:", err));
+          pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(err =>
+            console.error("[WebRTC] Failed to add buffered ICE candidate:", err)
+          );
         }
         transport.pendingCandidates = [];
       }
       return pc.createAnswer();
     })
-    .then((answer) => pc.setLocalDescription(answer))
+    .then(answer => pc.setLocalDescription(answer))
     .then(() => {
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({
-          type: "rtc-answer",
-          sdp: pc.localDescription,
-        }));
+        ws.send(
+          JSON.stringify({
+            type: "rtc-answer",
+            sdp: pc.localDescription,
+          })
+        );
         console.log("[WebRTC Client] Sent SDP answer");
       }
     })
-    .catch((err) => {
+    .catch(err => {
       console.error("[WebRTC Client] Failed to create answer:", err);
       pushDebugLog(`[P2P] Client answer creation failed: ${err.message}`);
       if (!settled) {
@@ -489,7 +805,9 @@ export function createClientRTC(
     if (!settled) {
       settled = true;
       console.log("[WebRTC Client] Timeout — falling back to relay");
-      pushDebugLog(`[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`);
+      pushDebugLog(
+        `[P2P] WebRTC FAILED — timeout after ${RTC_TIMEOUT_MS / 1000}s`
+      );
       transport.mode = "relay";
       onFail();
     }
@@ -502,10 +820,21 @@ export function createClientRTC(
       clearTimeout(disconnectTimerId);
       disconnectTimerId = null;
     }
+    if (
+      transport.selectedPathIceTransport &&
+      transport.selectedPathChangeHandler
+    ) {
+      transport.selectedPathIceTransport.removeEventListener?.(
+        "selectedcandidatepairchange",
+        transport.selectedPathChangeHandler
+      );
+    }
     try {
       if (transport.dataChannel) transport.dataChannel.close();
     } catch {}
-    try { pc.close(); } catch {}
+    try {
+      pc.close();
+    } catch {}
   };
 
   return transport;
@@ -514,14 +843,18 @@ export function createClientRTC(
 /**
  * Handle incoming WebRTC signaling messages on an existing transport.
  * Call this from the WebSocket message handler for rtc-answer and rtc-ice messages.
- * 
+ *
  * IMPORTANT: ICE candidates are buffered until remote description is set.
  * This prevents the common "Failed to add ICE candidate" error when candidates
  * arrive before the answer/offer is processed.
  */
 export function handleRTCSignaling(
   transport: WebRTCTransport | null,
-  msg: { type: string; sdp?: RTCSessionDescriptionInit; candidate?: RTCIceCandidateInit }
+  msg: {
+    type: string;
+    sdp?: RTCSessionDescriptionInit;
+    candidate?: RTCIceCandidateInit;
+  }
 ): void {
   if (!transport) return;
   const { pc } = transport;
@@ -532,16 +865,25 @@ export function handleRTCSignaling(
         console.log("[WebRTC] Set remote answer");
         transport.remoteDescriptionSet = true;
         // Flush any buffered ICE candidates
-        if (transport.pendingCandidates && transport.pendingCandidates.length > 0) {
-          pushDebugLog(`[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates (host side)`);
+        if (
+          transport.pendingCandidates &&
+          transport.pendingCandidates.length > 0
+        ) {
+          pushDebugLog(
+            `[ICE] Flushing ${transport.pendingCandidates.length} buffered candidates (host side)`
+          );
           for (const candidate of transport.pendingCandidates) {
-            pc.addIceCandidate(new RTCIceCandidate(candidate))
-              .catch((err) => console.error("[WebRTC] Failed to add buffered ICE candidate:", err));
+            pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(err =>
+              console.error(
+                "[WebRTC] Failed to add buffered ICE candidate:",
+                err
+              )
+            );
           }
           transport.pendingCandidates = [];
         }
       })
-      .catch((err) => {
+      .catch(err => {
         console.error("[WebRTC] Failed to set remote answer:", err);
         pushDebugLog(`[P2P] Failed to set remote answer: ${err.message}`);
       });
@@ -554,8 +896,9 @@ export function handleRTCSignaling(
       transport.pendingCandidates.push(msg.candidate);
       return;
     }
-    pc.addIceCandidate(new RTCIceCandidate(msg.candidate))
-      .catch((err) => console.error("[WebRTC] Failed to add ICE candidate:", err));
+    pc.addIceCandidate(new RTCIceCandidate(msg.candidate)).catch(err =>
+      console.error("[WebRTC] Failed to add ICE candidate:", err)
+    );
   }
 }
 
@@ -564,8 +907,8 @@ export function handleRTCSignaling(
  */
 function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
   try {
-    pc.getStats().then((stats) => {
-      stats.forEach((report) => {
+    pc.getStats().then(stats => {
+      stats.forEach(report => {
         if (report.type === "candidate-pair" && report.state === "succeeded") {
           const localId = report.localCandidateId;
           const remoteId = report.remoteCandidateId;
@@ -575,7 +918,7 @@ function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
           let remoteAddr = "";
           let localProto = "";
           let remoteProto = "";
-          stats.forEach((r) => {
+          stats.forEach(r => {
             if (r.id === localId) {
               localType = r.candidateType || "unknown";
               localAddr = `${r.address || r.ip || ""}:${r.port || ""}`;
@@ -587,15 +930,19 @@ function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
               remoteProto = r.protocol || "";
             }
           });
-          pushDebugLog(`[ICE] ${role} CONNECTED pair: local=${localType}(${localAddr},${localProto}) remote=${remoteType}(${remoteAddr},${remoteProto})`);
+          pushDebugLog(
+            `[ICE] ${role} CONNECTED pair: local=${localType}(${localAddr},${localProto}) remote=${remoteType}(${remoteAddr},${remoteProto})`
+          );
         }
       });
 
       // Also log all failed candidate pairs for diagnosis
       const failedPairs: string[] = [];
-      stats.forEach((report) => {
+      stats.forEach(report => {
         if (report.type === "candidate-pair" && report.state === "failed") {
-          failedPairs.push(`${report.localCandidateId}<->${report.remoteCandidateId}`);
+          failedPairs.push(
+            `${report.localCandidateId}<->${report.remoteCandidateId}`
+          );
         }
       });
       if (failedPairs.length > 0) {
@@ -611,20 +958,27 @@ function logSelectedCandidatePair(pc: RTCPeerConnection, role: string): void {
  * Log detailed ICE failure diagnosis when connection fails.
  * Call this when connectionState becomes "failed".
  */
-export function logICEFailureDiagnosis(pc: RTCPeerConnection, role: string): void {
+export function logICEFailureDiagnosis(
+  pc: RTCPeerConnection,
+  role: string
+): void {
   try {
-    pc.getStats().then((stats) => {
+    pc.getStats().then(stats => {
       const localCandidates: string[] = [];
       const remoteCandidates: string[] = [];
       let checkedPairs = 0;
       let failedPairs = 0;
 
-      stats.forEach((report) => {
+      stats.forEach(report => {
         if (report.type === "local-candidate") {
-          localCandidates.push(`${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`);
+          localCandidates.push(
+            `${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`
+          );
         }
         if (report.type === "remote-candidate") {
-          remoteCandidates.push(`${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`);
+          remoteCandidates.push(
+            `${report.candidateType}(${report.address || report.ip}:${report.port},${report.protocol})`
+          );
         }
         if (report.type === "candidate-pair") {
           checkedPairs++;
@@ -633,25 +987,51 @@ export function logICEFailureDiagnosis(pc: RTCPeerConnection, role: string): voi
       });
 
       pushDebugLog(`[ICE-DIAG] ${role} FAILURE ANALYSIS:`);
-      pushDebugLog(`[ICE-DIAG] Local candidates (${localCandidates.length}): ${localCandidates.join(", ") || "NONE"}`);
-      pushDebugLog(`[ICE-DIAG] Remote candidates (${remoteCandidates.length}): ${remoteCandidates.join(", ") || "NONE"}`);
-      pushDebugLog(`[ICE-DIAG] Pairs checked=${checkedPairs} failed=${failedPairs}`);
+      pushDebugLog(
+        `[ICE-DIAG] Local candidates (${localCandidates.length}): ${localCandidates.join(", ") || "NONE"}`
+      );
+      pushDebugLog(
+        `[ICE-DIAG] Remote candidates (${remoteCandidates.length}): ${remoteCandidates.join(", ") || "NONE"}`
+      );
+      pushDebugLog(
+        `[ICE-DIAG] Pairs checked=${checkedPairs} failed=${failedPairs}`
+      );
 
       // Diagnosis logic
       if (localCandidates.length === 0) {
-        pushDebugLog(`[ICE-DIAG] CAUSE: No local candidates gathered — network interface issue or browser restriction`);
+        pushDebugLog(
+          `[ICE-DIAG] CAUSE: No local candidates gathered — network interface issue or browser restriction`
+        );
       } else if (remoteCandidates.length === 0) {
-        pushDebugLog(`[ICE-DIAG] CAUSE: No remote candidates received — signaling issue or peer not responding`);
-      } else if (localCandidates.every(c => c.startsWith("host")) && remoteCandidates.every(c => c.startsWith("host"))) {
-        pushDebugLog(`[ICE-DIAG] CAUSE: Both sides only have host candidates (no srflx) — STUN server unreachable or blocked`);
-        pushDebugLog(`[ICE-DIAG] Both have LAN IPs but cannot connect — likely AP ISOLATION or firewall blocking LAN UDP`);
-      } else if (localCandidates.some(c => c.startsWith("host")) && remoteCandidates.some(c => c.startsWith("host"))) {
+        pushDebugLog(
+          `[ICE-DIAG] CAUSE: No remote candidates received — signaling issue or peer not responding`
+        );
+      } else if (
+        localCandidates.every(c => c.startsWith("host")) &&
+        remoteCandidates.every(c => c.startsWith("host"))
+      ) {
+        pushDebugLog(
+          `[ICE-DIAG] CAUSE: Both sides only have host candidates (no srflx) — STUN server unreachable or blocked`
+        );
+        pushDebugLog(
+          `[ICE-DIAG] Both have LAN IPs but cannot connect — likely AP ISOLATION or firewall blocking LAN UDP`
+        );
+      } else if (
+        localCandidates.some(c => c.startsWith("host")) &&
+        remoteCandidates.some(c => c.startsWith("host"))
+      ) {
         const hasLocalSrflx = localCandidates.some(c => c.startsWith("srflx"));
-        const hasRemoteSrflx = remoteCandidates.some(c => c.startsWith("srflx"));
+        const hasRemoteSrflx = remoteCandidates.some(c =>
+          c.startsWith("srflx")
+        );
         if (hasLocalSrflx || hasRemoteSrflx) {
-          pushDebugLog(`[ICE-DIAG] CAUSE: Have srflx candidates but still failed — likely symmetric NAT or restrictive firewall`);
+          pushDebugLog(
+            `[ICE-DIAG] CAUSE: Have srflx candidates but still failed — likely symmetric NAT or restrictive firewall`
+          );
         } else {
-          pushDebugLog(`[ICE-DIAG] CAUSE: Host candidates exist but connection failed — AP ISOLATION most likely (router blocks device-to-device traffic)`);
+          pushDebugLog(
+            `[ICE-DIAG] CAUSE: Host candidates exist but connection failed — AP ISOLATION most likely (router blocks device-to-device traffic)`
+          );
         }
       }
     });
@@ -663,22 +1043,20 @@ export function logICEFailureDiagnosis(pc: RTCPeerConnection, role: string): voi
 /**
  * Send data through the best available channel.
  * Prefers DataChannel (P2P) if open, falls back to WebSocket (relay).
- * 
+ *
  * IMPORTANT: This function checks readyState directly, not the transport.mode flag.
  * This prevents issues where mode flag lags behind actual channel state.
- * 
+ *
  * @returns "p2p" if sent via DataChannel, "relay" if sent via WebSocket
  */
 export function sendViaTransport(
   transport: WebRTCTransport | null,
   ws: WebSocket | null,
   data: string | ArrayBuffer,
+  beforeRelay?: () => void
 ): TransportMode {
   // Try DataChannel first — check actual readyState, not just mode flag
-  if (
-    transport?.dataChannel &&
-    transport.dataChannel.readyState === "open"
-  ) {
+  if (transport?.dataChannel && transport.dataChannel.readyState === "open") {
     try {
       transport.dataChannel.send(data as any);
       return "p2p";
@@ -686,19 +1064,31 @@ export function sendViaTransport(
       // Log to debug panel so user can see why P2P failed
       const errMsg = err instanceof Error ? err.message : String(err);
       const bufAmt = transport.dataChannel.bufferedAmount;
-      pushDebugLog(`[P2P-ERR] send failed: ${errMsg} | buf=${(bufAmt / 1024).toFixed(0)}KB | dataSize=${typeof data === "string" ? data.length : (data as ArrayBuffer).byteLength}B`);
-      console.warn("[Transport] DataChannel send failed, falling back to relay:", err);
+      pushDebugLog(
+        `[P2P-ERR] send failed: ${errMsg} | buf=${(bufAmt / 1024).toFixed(0)}KB | dataSize=${typeof data === "string" ? data.length : (data as ArrayBuffer).byteLength}B`
+      );
+      console.warn(
+        "[Transport] DataChannel send failed, falling back to relay:",
+        err
+      );
     }
   } else if (transport?.dataChannel) {
     // DataChannel exists but not open — log once for debugging
     if (!sendViaTransport._loggedNotOpen) {
-      pushDebugLog(`[P2P-WARN] DataChannel exists but state=${transport.dataChannel.readyState}, using relay`);
+      pushDebugLog(
+        `[P2P-WARN] DataChannel exists but state=${transport.dataChannel.readyState}, using relay`
+      );
       sendViaTransport._loggedNotOpen = true;
     }
   }
 
   // Fallback to WebSocket
   if (ws && ws.readyState === WebSocket.OPEN) {
+    // A file policy callback belongs here rather than in the DataChannel catch:
+    // it must run only after a raw DC attempt failed (or was unavailable),
+    // immediately before WS.send, and any policy exception must prevent the
+    // WebSocket write instead of being swallowed as a P2P error.
+    beforeRelay?.();
     ws.send(data);
     return "relay";
   }
@@ -714,12 +1104,9 @@ sendViaTransport._loggedNotOpen = false as boolean;
  */
 export function getTransportBufferedAmount(
   transport: WebRTCTransport | null,
-  ws: WebSocket | null,
+  ws: WebSocket | null
 ): number {
-  if (
-    transport?.dataChannel &&
-    transport.dataChannel.readyState === "open"
-  ) {
+  if (transport?.dataChannel && transport.dataChannel.readyState === "open") {
     return transport.dataChannel.bufferedAmount;
   }
   if (ws) {

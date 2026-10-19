@@ -26,12 +26,26 @@ import {
   handleRTCSignaling,
   sendViaTransport,
   getTransportBufferedAmount,
+  refreshSelectedPath,
   type WebRTCTransport,
   type TransportMode,
 } from "@/lib/webrtc";
 import { pushDebugLog } from "@/components/DebugPanel";
 import { appendTransferItem } from "@/lib/transferItems";
 import { getFolderName, type FolderTransferFile } from "@/lib/folderTransfer";
+import {
+  FILE_CHUNK_BYTES,
+  FILE_HEADER_BYTES,
+  RELAY_MAX_FILE_BYTES,
+  RelayLimitError,
+  isRelayExemptImage,
+  type RelayFileMeta,
+} from "@shared/relayLimits";
+import {
+  prepareFileTransfer,
+  sendFileViaTransport,
+  getFileTransportMode,
+} from "@/lib/relayTransfer";
 
 interface FileChunkMeta {
   id: string;
@@ -45,6 +59,7 @@ interface FileChunkMeta {
   relativePath?: string;
   folderFileCount?: number;
   folderTotalSize?: number;
+  folderRestrictedSize?: number;
 }
 
 interface FileReceiveState {
@@ -67,10 +82,28 @@ interface FileSendState {
   relativePath?: string;
   folderFileCount?: number;
   folderTotalSize?: number;
+  folderRestrictedSize?: number;
 }
 
-const CHUNK_SIZE = 512 * 1024; // 512KB — larger chunks to reduce overhead and improve throughput
-const HEADER_SIZE = 40; // 36-byte UUID + 4-byte chunk index
+const CHUNK_SIZE = FILE_CHUNK_BYTES; // Small enough for negotiated browser message limits
+const HEADER_SIZE = FILE_HEADER_BYTES; // 36-byte UUID + 4-byte chunk index
+
+function getSendMeta(state: FileSendState): RelayFileMeta {
+  return {
+    id: state.id,
+    name: state.file.name,
+    size: state.file.size,
+    mimeType: state.file.type,
+    totalChunks: state.totalChunks,
+    isScreenshot: state.isScreenshot,
+    folderId: state.folderId,
+    folderName: state.folderName,
+    relativePath: state.relativePath,
+    folderFileCount: state.folderFileCount,
+    folderTotalSize: state.folderTotalSize,
+    folderRestrictedSize: state.folderRestrictedSize,
+  };
+}
 
 function getWsUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -89,6 +122,9 @@ export function usePeerClient() {
   const rtcRef = useRef<WebRTCTransport | null>(null);
   const fileChunksRef = useRef<Map<string, FileReceiveState>>(new Map());
   const folderItemIdsRef = useRef<Set<string>>(new Set());
+  const rejectedFilesRef = useRef<
+    Map<string, { code: string; maxBytes: number }>
+  >(new Map());
   const pingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const binaryQueueRef = useRef<Promise<void>>(Promise.resolve());
 
@@ -106,7 +142,10 @@ export function usePeerClient() {
 
   // Keep sent file references for chunk-request resend (auto-clean after 120s)
   const sentFilesRef = useRef<
-    Map<string, { file: File; totalChunks: number; sentAt: number }>
+    Map<
+      string,
+      { file: File; totalChunks: number; sentAt: number; meta: RelayFileMeta }
+    >
   >(new Map());
 
   // Wake Lock to prevent phone from sleeping during transfer
@@ -195,7 +234,14 @@ export function usePeerClient() {
               : 0;
         return next.map(item =>
           item.id === folder.id
-            ? { ...item, status, progress: status === "done" ? 100 : progress }
+            ? {
+                ...item,
+                status,
+                progress: status === "done" ? 100 : progress,
+                errorCode: changed.errorCode || item.errorCode,
+                relayLimitBytes:
+                  changed.relayLimitBytes || item.relayLimitBytes,
+              }
             : item
         );
       });
@@ -211,8 +257,59 @@ export function usePeerClient() {
     >
   >(new Map());
 
+  const cancelFileTransfer = useCallback(
+    (
+      fileId: string,
+      code = "RELAY_FILE_TOO_LARGE",
+      maxBytes = RELAY_MAX_FILE_BYTES
+    ) => {
+      rejectedFilesRef.current.set(fileId, { code, maxBytes });
+      activeSendAbortsRef.current.get(fileId)?.abort();
+      activeSendAbortsRef.current.delete(fileId);
+      pendingSendsRef.current.delete(fileId);
+      sentFilesRef.current.delete(fileId);
+      fileChunksRef.current.delete(fileId);
+      const retry = chunkRequestRetryRef.current.get(fileId);
+      if (retry?.timer) clearTimeout(retry.timer);
+      chunkRequestRetryRef.current.delete(fileId);
+      updateItem(fileId, {
+        status: "error",
+        errorCode: code,
+        relayLimitBytes: maxBytes,
+      });
+    },
+    [updateItem]
+  );
+
+  const handleFileSendError = useCallback(
+    (fileId: string, failure: unknown) => {
+      const limited = failure instanceof RelayLimitError;
+      const code = limited ? "RELAY_FILE_TOO_LARGE" : "FILE_TRANSFER_FAILED";
+      const maxBytes = limited ? failure.maxBytes : RELAY_MAX_FILE_BYTES;
+      setTransportMode(getFileTransportMode(rtcRef.current));
+      cancelFileTransfer(fileId, code, maxBytes);
+      const socket = wsRef.current;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(
+          JSON.stringify({ type: "file-cancel", fileId, code, maxBytes })
+        );
+      }
+    },
+    [cancelFileTransfer]
+  );
+
+  const assertNotRejected = useCallback((fileId: string) => {
+    const rejected = rejectedFilesRef.current.get(fileId);
+    if (!rejected) return;
+    if (rejected.code === "RELAY_FILE_TOO_LARGE") {
+      throw new RelayLimitError(rejected.maxBytes, fileId);
+    }
+    throw new Error("File transfer was cancelled");
+  }, []);
+
   const requestMissingChunks = useCallback(
     (fileId: string, missingChunks: number[]) => {
+      if (rejectedFilesRef.current.has(fileId)) return;
       const ws = wsRef.current;
       if (!ws || ws.readyState !== WebSocket.OPEN) {
         pushDebugLog(`[RETRY-ERR] Cannot request chunks — WS not open`);
@@ -443,8 +540,20 @@ export function usePeerClient() {
             });
             break;
 
+          case "file-rejected":
+          case "file-cancel":
+            if (typeof msg.fileId === "string") {
+              cancelFileTransfer(
+                msg.fileId,
+                msg.code || "FILE_TRANSFER_FAILED",
+                msg.maxBytes || RELAY_MAX_FILE_BYTES
+              );
+            }
+            break;
+
           case "file-meta": {
             const meta: FileChunkMeta = msg.meta;
+            if (rejectedFilesRef.current.has(meta.id)) break;
             if (meta.folderId && !folderItemIdsRef.current.has(meta.folderId)) {
               folderItemIdsRef.current.add(meta.folderId);
               addItem({
@@ -529,7 +638,7 @@ export function usePeerClient() {
         console.error("[Client] Error handling data message:", err);
       }
     },
-    [addItem, processBinaryChunk, assembleFile, updateItem]
+    [addItem, processBinaryChunk, assembleFile, updateItem, cancelFileTransfer]
   );
 
   /** Handle WebRTC offer from host — create answer and establish P2P */
@@ -552,11 +661,12 @@ export function usePeerClient() {
         // onOpen — DataChannel is ready
         () => {
           rtcRef.current = transport;
-          setTransportMode("p2p");
-          pushDebugLog("[P2P] DataChannel OPEN — P2P mode active");
-          console.log(
-            "[Client] WebRTC P2P established! Transfers will use direct connection."
-          );
+          setTransportMode(getFileTransportMode(transport));
+          void refreshSelectedPath(transport).then(() => {
+            if (rtcRef.current === transport)
+              setTransportMode(getFileTransportMode(transport));
+          });
+          pushDebugLog("[WebRTC] DataChannel OPEN — checking selected route");
         },
         // onMessage — data from DataChannel
         handleDataMessage,
@@ -593,15 +703,22 @@ export function usePeerClient() {
       pushDebugLog(
         `[RESUME] ${sendState.file.name} from chunk ${sendState.lastSentChunk + 1}/${sendState.totalChunks}`
       );
-      resumeFileSend(sendState);
+      void resumeFileSend(sendState).catch(failure =>
+        handleFileSendError(id, failure)
+      );
     }
-  }, []);
+  }, [handleFileSendError]);
 
   const resumeFileSend = useCallback(
     async (sendState: FileSendState) => {
       const ws = wsRef.current;
       const { id, file, totalChunks, lastSentChunk } = sendState;
       const startChunk = lastSentChunk + 1;
+      assertNotRejected(id);
+      const transferMeta = getSendMeta(sendState);
+      await prepareFileTransfer(rtcRef.current, ws, transferMeta);
+      assertNotRejected(id);
+      setTransportMode(getFileTransportMode(rtcRef.current));
 
       pushDebugLog(
         `[RESUME] ${file.name} from chunk ${startChunk}/${totalChunks}`
@@ -609,7 +726,8 @@ export function usePeerClient() {
 
       if (startChunk >= totalChunks) {
         const completeStr = JSON.stringify({ type: "file-complete", id });
-        sendViaTransport(rtcRef.current, ws, completeStr);
+        sendFileViaTransport(rtcRef.current, ws, completeStr, transferMeta);
+        assertNotRejected(id);
         updateItem(id, { progress: 100, status: "done" });
         sendState.completed = true;
         pendingSendsRef.current.delete(id);
@@ -632,17 +750,20 @@ export function usePeerClient() {
           relativePath: sendState.relativePath,
           folderFileCount: sendState.folderFileCount,
           folderTotalSize: sendState.folderTotalSize,
+          folderRestrictedSize: sendState.folderRestrictedSize,
         },
       });
-      sendViaTransport(rtcRef.current, ws, metaStr);
+      sendFileViaTransport(rtcRef.current, ws, metaStr, transferMeta);
 
       const buffer = await file.arrayBuffer();
+      assertNotRejected(id);
       const abortController = new AbortController();
       activeSendAbortsRef.current.set(id, abortController);
       const resumeStartTime = Date.now();
       let lastLoggedProgress = 0;
 
       for (let i = startChunk; i < totalChunks; i++) {
+        assertNotRejected(id);
         if (abortController.signal.aborted) {
           pushDebugLog(`[RESUME] Paused again at chunk ${i}/${totalChunks}`);
           return;
@@ -683,6 +804,7 @@ export function usePeerClient() {
           const maxBuffer = 512 * 1024;
           let bpWaits = 0;
           while (ws && ws.bufferedAmount > maxBuffer) {
+            assertNotRejected(id);
             if (abortController.signal.aborted) return;
             await new Promise(resolve => setTimeout(resolve, 10));
             bpWaits++;
@@ -706,7 +828,13 @@ export function usePeerClient() {
           return;
         }
 
-        const actualMode = sendViaTransport(rtcRef.current, ws, combined);
+        const actualMode = sendFileViaTransport(
+          rtcRef.current,
+          ws,
+          combined,
+          transferMeta
+        );
+        setTransportMode(actualMode);
         sendState.lastSentChunk = i;
 
         const progress = Math.min(
@@ -728,14 +856,20 @@ export function usePeerClient() {
       }
 
       const completeStr = JSON.stringify({ type: "file-complete", id });
-      sendViaTransport(rtcRef.current, ws, completeStr);
+      sendFileViaTransport(rtcRef.current, ws, completeStr, transferMeta);
+      assertNotRejected(id);
       updateItem(id, { progress: 100, status: "done" });
       sendState.completed = true;
       pendingSendsRef.current.delete(id);
       activeSendAbortsRef.current.delete(id);
 
       // Keep file reference for potential chunk-request resend (120s TTL)
-      sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
+      sentFilesRef.current.set(id, {
+        file,
+        totalChunks,
+        sentAt: Date.now(),
+        meta: transferMeta,
+      });
       setTimeout(() => {
         sentFilesRef.current.delete(id);
       }, 120_000);
@@ -743,7 +877,7 @@ export function usePeerClient() {
       const totalTime = ((Date.now() - resumeStartTime) / 1000).toFixed(1);
       pushDebugLog(`[RESUME] DONE: ${file.name} | ${totalTime}s`);
     },
-    [updateItem]
+    [updateItem, assertNotRejected]
   );
 
   const handleWsMessage = useCallback(
@@ -801,6 +935,8 @@ export function usePeerClient() {
           case "file-meta":
           case "file-complete":
           case "file-ack":
+          case "file-rejected":
+          case "file-cancel":
             handleDataMessage(event);
             break;
 
@@ -824,8 +960,17 @@ export function usePeerClient() {
             (async () => {
               const ws = wsRef.current;
               if (!ws || ws.readyState !== WebSocket.OPEN) return;
-              const CHUNK_SZ = 256 * 1024;
+              await prepareFileTransfer(null, ws, sentFile.meta);
+              assertNotRejected(fileId);
+              const CHUNK_SZ = CHUNK_SIZE;
               for (const idx of requestedChunks) {
+                assertNotRejected(fileId);
+                if (
+                  !Number.isInteger(idx) ||
+                  idx < 0 ||
+                  idx >= sentFile.totalChunks
+                )
+                  continue;
                 const start = idx * CHUNK_SZ;
                 const end = Math.min(start + CHUNK_SZ, sentFile.file.size);
                 const blob = sentFile.file.slice(start, end);
@@ -847,12 +992,13 @@ export function usePeerClient() {
                   await new Promise(resolve => setTimeout(resolve, 10));
                   if (ws.readyState !== WebSocket.OPEN) return;
                 }
-                ws.send(combined.buffer);
+                sendFileViaTransport(null, ws, combined.buffer, sentFile.meta);
+                setTransportMode("relay");
               }
               pushDebugLog(
                 `[RESEND] Done resending ${requestedChunks.length} chunks`
               );
-            })();
+            })().catch(failure => handleFileSendError(fileId, failure));
             break;
           }
 
@@ -909,7 +1055,13 @@ export function usePeerClient() {
         console.error("[Client] Error handling message:", err);
       }
     },
-    [handleDataMessage, handleRTCOffer, resumePendingSends]
+    [
+      handleDataMessage,
+      handleRTCOffer,
+      resumePendingSends,
+      handleFileSendError,
+      assertNotRejected,
+    ]
   );
 
   /** Attempt to reconnect WebSocket */
@@ -991,6 +1143,7 @@ export function usePeerClient() {
         setTransportMode("relay");
         fileChunksRef.current.clear();
         folderItemIdsRef.current.clear();
+        rejectedFilesRef.current.clear();
         pendingSendsRef.current.clear();
         intentionalCloseRef.current = false;
         wasConnectedRef.current = false;
@@ -1112,176 +1265,71 @@ export function usePeerClient() {
         relativePath: options?.relativePath,
         folderFileCount: options?.folderFileCount,
         folderTotalSize: options?.folderTotalSize,
+        folderRestrictedSize: options?.folderRestrictedSize,
       };
+      const transferMeta = getSendMeta(sendState);
+      await prepareFileTransfer(rtcRef.current, ws, transferMeta);
+      setTransportMode(getFileTransportMode(rtcRef.current));
       pendingSendsRef.current.set(id, sendState);
 
-      addItem({
-        id,
-        type: "file",
-        direction: "sent",
-        name: file.name,
-        size: file.size,
-        blob: options?.isScreenshot ? file : undefined,
-        progress: 0,
-        timestamp: Date.now(),
-        status: "transferring",
-        isScreenshot: options?.isScreenshot,
-        folderId: options?.folderId,
-        folderName: options?.folderName,
-        relativePath: options?.relativePath,
-      });
-
-      const metaStr = JSON.stringify({
-        type: "file-meta",
-        meta: {
+      try {
+        addItem({
           id,
+          type: "file",
+          direction: "sent",
           name: file.name,
           size: file.size,
-          mimeType: file.type,
-          totalChunks,
+          blob: options?.isScreenshot ? file : undefined,
+          progress: 0,
+          timestamp: Date.now(),
+          status: "transferring",
           isScreenshot: options?.isScreenshot,
           folderId: options?.folderId,
           folderName: options?.folderName,
           relativePath: options?.relativePath,
-          folderFileCount: options?.folderFileCount,
-          folderTotalSize: options?.folderTotalSize,
-        },
-      });
-      sendViaTransport(rtcRef.current, ws, metaStr);
+        });
 
-      const buffer = await file.arrayBuffer();
-      const abortController = new AbortController();
-      activeSendAbortsRef.current.set(id, abortController);
-      const sendStartTime = Date.now();
-      let lastLoggedProgress = 0;
+        const metaStr = JSON.stringify({
+          type: "file-meta",
+          meta: {
+            id,
+            name: file.name,
+            size: file.size,
+            mimeType: file.type,
+            totalChunks,
+            isScreenshot: options?.isScreenshot,
+            folderId: options?.folderId,
+            folderName: options?.folderName,
+            relativePath: options?.relativePath,
+            folderFileCount: options?.folderFileCount,
+            folderTotalSize: options?.folderTotalSize,
+            folderRestrictedSize: options?.folderRestrictedSize,
+          },
+        });
+        sendFileViaTransport(rtcRef.current, ws, metaStr, transferMeta);
 
-      // Track chunks sent via P2P that might be lost if DC crashes
-      const p2pSentChunks: number[] = [];
-      let dcWasOpen = rtcRef.current?.dataChannel?.readyState === "open";
-      let dcCrashDetected = false;
+        const buffer = await file.arrayBuffer();
+        assertNotRejected(id);
+        const abortController = new AbortController();
+        activeSendAbortsRef.current.set(id, abortController);
+        const sendStartTime = Date.now();
+        let lastLoggedProgress = 0;
 
-      for (let i = 0; i < totalChunks; i++) {
-        if (abortController.signal.aborted) {
-          pushDebugLog(
-            `[SEND] Paused at chunk ${i}/${totalChunks}, will resume`
-          );
-          return;
-        }
+        // Track chunks sent via P2P that might be lost if DC crashes
+        const p2pSentChunks: number[] = [];
+        let dcWasOpen = rtcRef.current?.dataChannel?.readyState === "open";
+        let dcCrashDetected = false;
 
-        const start = i * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const chunk = buffer.slice(start, end);
-
-        const idBytes = new TextEncoder().encode(id);
-        const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
-        const view = new Uint8Array(combined);
-        view.set(idBytes, 0);
-        const indexView = new DataView(combined, 36, 4);
-        indexView.setUint32(0, i, false);
-        view.set(new Uint8Array(chunk), HEADER_SIZE);
-
-        // Back-pressure: event-driven for P2P, polling for relay
-        const dc = rtcRef.current?.dataChannel;
-        const dcOpen = dc?.readyState === "open";
-
-        if (dcOpen && dc) {
-          const P2P_MAX_BUFFER = 512 * 1024;
-          if (dc.bufferedAmount > P2P_MAX_BUFFER) {
-            await new Promise<void>(resolve => {
-              const onLow = () => {
-                dc.removeEventListener("bufferedamountlow", onLow);
-                resolve();
-              };
-              dc.addEventListener("bufferedamountlow", onLow);
-              setTimeout(() => {
-                dc.removeEventListener("bufferedamountlow", onLow);
-                resolve();
-              }, 5000);
-            });
+        for (let i = 0; i < totalChunks; i++) {
+          assertNotRejected(id);
+          if (abortController.signal.aborted) {
+            pushDebugLog(
+              `[SEND] Paused at chunk ${i}/${totalChunks}, will resume`
+            );
+            return;
           }
-        } else {
-          const maxBuffer = 512 * 1024;
-          let bpWaits = 0;
-          while (ws && ws.bufferedAmount > maxBuffer) {
-            if (abortController.signal.aborted) return;
-            await new Promise(resolve => setTimeout(resolve, 10));
-            bpWaits++;
-            if (ws.readyState !== WebSocket.OPEN) {
-              pushDebugLog(
-                `[ERR] WebSocket closed during relay at chunk ${i}/${totalChunks}`
-              );
-              sendState.lastSentChunk = i - 1;
-              return;
-            }
-            if (bpWaits % 500 === 0) {
-              pushDebugLog(
-                `[WARN] Relay back-pressure wait ${bpWaits} at chunk ${i}, buf=${(ws.bufferedAmount / 1024).toFixed(0)}KB`
-              );
-            }
-          }
-        }
 
-        const dcStillOpen = rtcRef.current?.dataChannel?.readyState === "open";
-        const wsOpen = ws?.readyState === WebSocket.OPEN;
-        if (!dcStillOpen && !wsOpen) {
-          pushDebugLog(
-            `[ERR] Both transports dead at chunk ${i}/${totalChunks}`
-          );
-          sendState.lastSentChunk = i - 1;
-          return;
-        }
-
-        const actualMode = sendViaTransport(rtcRef.current, ws, combined);
-        sendState.lastSentChunk = i;
-
-        // Track P2P-sent chunks for potential resend
-        if (actualMode === "p2p") {
-          p2pSentChunks.push(i);
-        }
-
-        // Detect DC crash: was open, now closed
-        if (
-          dcWasOpen &&
-          rtcRef.current?.dataChannel?.readyState !== "open" &&
-          !dcCrashDetected
-        ) {
-          dcCrashDetected = true;
-          pushDebugLog(
-            `[P2P-CRASH] DataChannel crashed after sending ${p2pSentChunks.length} chunks via P2P. Will resend via relay after main loop.`
-          );
-        }
-
-        const progress = Math.min(
-          99,
-          Math.round(((i + 1) / totalChunks) * 100)
-        );
-        updateItem(id, { progress, status: "transferring" });
-
-        // Log progress every 10%
-        if (progress >= lastLoggedProgress + 10) {
-          const elapsed = (Date.now() - sendStartTime) / 1000;
-          const sentBytes = (i + 1) * CHUNK_SIZE;
-          const speedMBs = sentBytes / (1024 * 1024) / elapsed;
-          const dcState = rtcRef.current?.dataChannel?.readyState || "none";
-          pushDebugLog(
-            `[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`
-          );
-          lastLoggedProgress = progress;
-        }
-      }
-
-      // If DC crashed, resend the chunks that were sent via P2P (they may have been lost)
-      if (
-        dcCrashDetected &&
-        p2pSentChunks.length > 0 &&
-        ws?.readyState === WebSocket.OPEN
-      ) {
-        pushDebugLog(
-          `[RESEND] Resending ${p2pSentChunks.length} chunks via relay (originally sent via P2P before crash)`
-        );
-        for (const chunkIdx of p2pSentChunks) {
-          if (abortController.signal.aborted) return;
-          const start = chunkIdx * CHUNK_SIZE;
+          const start = i * CHUNK_SIZE;
           const end = Math.min(start + CHUNK_SIZE, file.size);
           const chunk = buffer.slice(start, end);
 
@@ -1290,41 +1338,173 @@ export function usePeerClient() {
           const view = new Uint8Array(combined);
           view.set(idBytes, 0);
           const indexView = new DataView(combined, 36, 4);
-          indexView.setUint32(0, chunkIdx, false);
+          indexView.setUint32(0, i, false);
           view.set(new Uint8Array(chunk), HEADER_SIZE);
 
-          while (getTransportBufferedAmount(null, ws) > 512 * 1024) {
-            await new Promise(resolve => setTimeout(resolve, 10));
+          // Back-pressure: event-driven for P2P, polling for relay
+          const dc = rtcRef.current?.dataChannel;
+          const dcOpen = dc?.readyState === "open";
+
+          if (dcOpen && dc) {
+            const P2P_MAX_BUFFER = 512 * 1024;
+            if (dc.bufferedAmount > P2P_MAX_BUFFER) {
+              await new Promise<void>(resolve => {
+                const onLow = () => {
+                  dc.removeEventListener("bufferedamountlow", onLow);
+                  resolve();
+                };
+                dc.addEventListener("bufferedamountlow", onLow);
+                setTimeout(() => {
+                  dc.removeEventListener("bufferedamountlow", onLow);
+                  resolve();
+                }, 5000);
+              });
+            }
+          } else {
+            const maxBuffer = 512 * 1024;
+            let bpWaits = 0;
+            while (ws && ws.bufferedAmount > maxBuffer) {
+              assertNotRejected(id);
+              if (abortController.signal.aborted) return;
+              await new Promise(resolve => setTimeout(resolve, 10));
+              bpWaits++;
+              if (ws.readyState !== WebSocket.OPEN) {
+                pushDebugLog(
+                  `[ERR] WebSocket closed during relay at chunk ${i}/${totalChunks}`
+                );
+                sendState.lastSentChunk = i - 1;
+                return;
+              }
+              if (bpWaits % 500 === 0) {
+                pushDebugLog(
+                  `[WARN] Relay back-pressure wait ${bpWaits} at chunk ${i}, buf=${(ws.bufferedAmount / 1024).toFixed(0)}KB`
+                );
+              }
+            }
           }
-          sendViaTransport(null, ws, combined); // Force relay
+
+          const dcStillOpen =
+            rtcRef.current?.dataChannel?.readyState === "open";
+          const wsOpen = ws?.readyState === WebSocket.OPEN;
+          if (!dcStillOpen && !wsOpen) {
+            pushDebugLog(
+              `[ERR] Both transports dead at chunk ${i}/${totalChunks}`
+            );
+            sendState.lastSentChunk = i - 1;
+            return;
+          }
+
+          const actualMode = sendFileViaTransport(
+            rtcRef.current,
+            ws,
+            combined,
+            transferMeta
+          );
+          setTransportMode(actualMode);
+          sendState.lastSentChunk = i;
+
+          // Track P2P-sent chunks for potential resend
+          if (actualMode === "p2p") {
+            p2pSentChunks.push(i);
+          }
+
+          // Detect DC crash: was open, now closed
+          if (
+            dcWasOpen &&
+            rtcRef.current?.dataChannel?.readyState !== "open" &&
+            !dcCrashDetected
+          ) {
+            dcCrashDetected = true;
+            pushDebugLog(
+              `[P2P-CRASH] DataChannel crashed after sending ${p2pSentChunks.length} chunks via P2P. Will resend via relay after main loop.`
+            );
+          }
+
+          const progress = Math.min(
+            99,
+            Math.round(((i + 1) / totalChunks) * 100)
+          );
+          updateItem(id, { progress, status: "transferring" });
+
+          // Log progress every 10%
+          if (progress >= lastLoggedProgress + 10) {
+            const elapsed = (Date.now() - sendStartTime) / 1000;
+            const sentBytes = (i + 1) * CHUNK_SIZE;
+            const speedMBs = sentBytes / (1024 * 1024) / elapsed;
+            const dcState = rtcRef.current?.dataChannel?.readyState || "none";
+            pushDebugLog(
+              `[SEND] ${progress}% | ${elapsed.toFixed(1)}s | ${speedMBs.toFixed(2)} MB/s | mode=${actualMode} | dc=${dcState}`
+            );
+            lastLoggedProgress = progress;
+          }
         }
+
+        // If DC crashed, resend the chunks that were sent via P2P (they may have been lost)
+        if (
+          dcCrashDetected &&
+          p2pSentChunks.length > 0 &&
+          ws?.readyState === WebSocket.OPEN
+        ) {
+          pushDebugLog(
+            `[RESEND] Resending ${p2pSentChunks.length} chunks via relay (originally sent via P2P before crash)`
+          );
+          for (const chunkIdx of p2pSentChunks) {
+            assertNotRejected(id);
+            if (abortController.signal.aborted) return;
+            const start = chunkIdx * CHUNK_SIZE;
+            const end = Math.min(start + CHUNK_SIZE, file.size);
+            const chunk = buffer.slice(start, end);
+
+            const idBytes = new TextEncoder().encode(id);
+            const combined = new ArrayBuffer(HEADER_SIZE + chunk.byteLength);
+            const view = new Uint8Array(combined);
+            view.set(idBytes, 0);
+            const indexView = new DataView(combined, 36, 4);
+            indexView.setUint32(0, chunkIdx, false);
+            view.set(new Uint8Array(chunk), HEADER_SIZE);
+
+            while (getTransportBufferedAmount(null, ws) > 512 * 1024) {
+              await new Promise(resolve => setTimeout(resolve, 10));
+            }
+            sendFileViaTransport(null, ws, combined, transferMeta); // Force relay
+          }
+          pushDebugLog(
+            `[RESEND] Done resending ${p2pSentChunks.length} chunks via relay`
+          );
+        }
+
+        // Send completion signal
+        const completeStr = JSON.stringify({ type: "file-complete", id });
+        sendFileViaTransport(rtcRef.current, ws, completeStr, transferMeta);
+        assertNotRejected(id);
+        updateItem(id, { progress: 100, status: "done" });
+        sendState.completed = true;
+        pendingSendsRef.current.delete(id);
+        activeSendAbortsRef.current.delete(id);
+
+        // Keep file reference for potential chunk-request resend (120s TTL)
+        sentFilesRef.current.set(id, {
+          file,
+          totalChunks,
+          sentAt: Date.now(),
+          meta: transferMeta,
+        });
+        setTimeout(() => {
+          sentFilesRef.current.delete(id);
+        }, 120_000);
+
+        const totalTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
+        const avgSpeed =
+          file.size / (1024 * 1024) / ((Date.now() - sendStartTime) / 1000);
         pushDebugLog(
-          `[RESEND] Done resending ${p2pSentChunks.length} chunks via relay`
+          `[SEND] DONE: ${file.name} | ${totalTime}s | avg ${avgSpeed.toFixed(2)} MB/s`
         );
+      } catch (failure) {
+        handleFileSendError(id, failure);
+        throw failure;
       }
-
-      // Send completion signal
-      const completeStr = JSON.stringify({ type: "file-complete", id });
-      sendViaTransport(rtcRef.current, ws, completeStr);
-      updateItem(id, { progress: 100, status: "done" });
-      sendState.completed = true;
-      pendingSendsRef.current.delete(id);
-      activeSendAbortsRef.current.delete(id);
-
-      // Keep file reference for potential chunk-request resend (120s TTL)
-      sentFilesRef.current.set(id, { file, totalChunks, sentAt: Date.now() });
-      setTimeout(() => {
-        sentFilesRef.current.delete(id);
-      }, 120_000);
-
-      const totalTime = ((Date.now() - sendStartTime) / 1000).toFixed(1);
-      const avgSpeed =
-        file.size / (1024 * 1024) / ((Date.now() - sendStartTime) / 1000);
-      pushDebugLog(
-        `[SEND] DONE: ${file.name} | ${totalTime}s | avg ${avgSpeed.toFixed(2)} MB/s`
-      );
     },
-    [addItem, updateItem]
+    [addItem, updateItem, handleFileSendError, assertNotRejected]
   );
 
   const sendFolder = useCallback(
@@ -1339,6 +1519,37 @@ export function usePeerClient() {
         (total, entry) => total + entry.file.size,
         0
       );
+
+      const folderRestrictedSize = folderFiles.reduce(
+        (total, entry) =>
+          total +
+          (isRelayExemptImage({
+            name: entry.file.name,
+            mimeType: entry.file.type,
+          })
+            ? 0
+            : entry.file.size),
+        0
+      );
+      const ordinary = folderFiles.find(
+        entry =>
+          !isRelayExemptImage({
+            name: entry.file.name,
+            mimeType: entry.file.type,
+          })
+      );
+      if (ordinary) {
+        await prepareFileTransfer(rtcRef.current, null, {
+          id: folderId,
+          name: ordinary.file.name,
+          size: ordinary.file.size,
+          mimeType: ordinary.file.type,
+          folderId,
+          folderTotalSize,
+          folderRestrictedSize,
+          totalChunks: Math.ceil(ordinary.file.size / CHUNK_SIZE),
+        });
+      }
 
       addItem({
         id: folderId,
@@ -1360,6 +1571,7 @@ export function usePeerClient() {
           relativePath: entry.relativePath,
           folderFileCount: folderFiles.length,
           folderTotalSize,
+          folderRestrictedSize,
         });
       }
     },
@@ -1388,6 +1600,7 @@ export function usePeerClient() {
     setTransportMode("relay");
     fileChunksRef.current.clear();
     folderItemIdsRef.current.clear();
+    rejectedFilesRef.current.clear();
     pendingSendsRef.current.clear();
     tokenRef.current = "";
     wasConnectedRef.current = false;

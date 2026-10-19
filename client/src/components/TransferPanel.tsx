@@ -16,6 +16,10 @@ import type { TransportMode } from "@/lib/webrtc";
 import { useI18n } from "@/contexts/I18nContext";
 import { cn } from "@/lib/utils";
 import {
+  formatRelayLimitHint,
+  getTransferErrorMessage,
+} from "@/lib/relayTransferUI";
+import {
   captureScreenshot,
   isScreenshotCaptureSupported,
   ScreenshotCaptureError,
@@ -100,7 +104,7 @@ function TransportBadge({ mode }: { mode: TransportMode }) {
   return (
     <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-mono uppercase tracking-wider bg-blue-500/10 text-blue-600 border border-blue-500/20">
       <Globe className="size-2.5" />
-      {t("relay")}
+      {mode === "turn" ? t("turnRelay") : t("relay")}
     </span>
   );
 }
@@ -186,8 +190,8 @@ export function TransferPanel({
       try {
         await onSendFile(screenshot, { isScreenshot: true });
         toast.success(t("screenshotSent"));
-      } catch {
-        toast.error(t("screenshotFailed"));
+      } catch (failure) {
+        toast.error(getTransferErrorMessage(failure, t));
       } finally {
         setPendingScreenshot(null);
         setIsCapturingScreenshot(false);
@@ -206,12 +210,18 @@ export function TransferPanel({
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const files = e.target.files;
       if (files)
-        void Promise.all(Array.from(files).map(file => onSendFile(file)));
+        for (const file of Array.from(files)) {
+          void Promise.resolve()
+            .then(() => onSendFile(file))
+            .catch(failure => {
+              toast.error(getTransferErrorMessage(failure, t));
+            });
+        }
       if (fileInputRef.current) {
         fileInputRef.current.value = "";
       }
     },
-    [onSendFile]
+    [onSendFile, t]
   );
 
   const handleFolderSelect = useCallback(
@@ -224,11 +234,15 @@ export function TransferPanel({
             (file as File & { webkitRelativePath?: string })
               .webkitRelativePath || file.name,
         }));
-        void onSendFolder(entries);
+        void Promise.resolve()
+          .then(() => onSendFolder(entries))
+          .catch(failure => {
+            toast.error(getTransferErrorMessage(failure, t));
+          });
       }
       if (folderInputRef.current) folderInputRef.current.value = "";
     },
-    [onSendFolder]
+    [onSendFolder, t]
   );
 
   const sendTransferEntries = useCallback(
@@ -298,8 +312,8 @@ export function TransferPanel({
           return;
         }
         await sendTransferEntries(entries);
-      } catch {
-        toast.error(t("fileSendFailed"));
+      } catch (failure) {
+        toast.error(getTransferErrorMessage(failure, t));
       }
     },
     [sendTransferEntries, t]
@@ -331,8 +345,8 @@ export function TransferPanel({
           return;
         }
         await sendTransferEntries(entries);
-      } catch {
-        toast.error(t("fileSendFailed"));
+      } catch (failure) {
+        toast.error(getTransferErrorMessage(failure, t));
       }
     },
     [sendTransferEntries, t]
@@ -467,6 +481,14 @@ export function TransferPanel({
 
       {/* Input area */}
       <div className="p-3 shrink-0 bg-background">
+        {transportMode !== "p2p" && (
+          <p
+            role="note"
+            className="mb-2 text-[10px] leading-relaxed text-muted-foreground"
+          >
+            {formatRelayLimitHint(t)}
+          </p>
+        )}
         <div className="flex items-end gap-2">
           <div className="flex-1 relative">
             <textarea

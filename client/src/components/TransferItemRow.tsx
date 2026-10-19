@@ -15,6 +15,7 @@ import {
 import { saveFolderToDirectory, FolderSaveError } from "@/lib/folderTransfer";
 import type { TransferItem } from "@/hooks/usePeerHost";
 import { useI18n } from "@/contexts/I18nContext";
+import { getTransferErrorMessage } from "@/lib/relayTransferUI";
 import {
   AlertTriangle,
   ArrowDown,
@@ -206,6 +207,17 @@ export function TransferItemRow({ item, allItems = [] }: TransferItemRowProps) {
               ? `${completedFiles}/${item.folderFileCount || folderFiles.length} · ${formatFileSize(item.folderTotalSize || 0)}`
               : formatTime(item.timestamp)}
           </span>
+          {item.status === "error" && (
+            <p
+              role="alert"
+              className="mt-1 text-[11px] leading-relaxed text-destructive"
+            >
+              {getTransferErrorMessage(
+                { code: item.errorCode, maxBytes: item.relayLimitBytes },
+                t
+              )}
+            </p>
+          )}
         </div>
         {canSave && (
           <button
@@ -390,6 +402,17 @@ export function TransferItemRow({ item, allItems = [] }: TransferItemRowProps) {
           <span className="text-[10px] font-mono text-muted-foreground/50 mt-1 block">
             {formatTime(item.timestamp)}
           </span>
+        )}
+        {item.status === "error" && (
+          <p
+            role="alert"
+            className="mt-1 text-[11px] leading-relaxed text-destructive"
+          >
+            {getTransferErrorMessage(
+              { code: item.errorCode, maxBytes: item.relayLimitBytes },
+              t
+            )}
+          </p>
         )}
       </div>
       <div className="shrink-0">

@@ -19,7 +19,7 @@ function createWsClient(): Promise<WebSocket> {
 }
 
 function waitForMessage(ws: WebSocket): Promise<any> {
-  return new Promise((resolve) => {
+  return new Promise(resolve => {
     ws.once("message", (data, isBinary) => {
       if (isBinary) {
         resolve({ _binary: true, data: Buffer.from(data as Buffer) });
@@ -31,7 +31,9 @@ function waitForMessage(ws: WebSocket): Promise<any> {
 }
 
 /** Helper: register host + join client, return both connected */
-async function setupRoom(token: string): Promise<{ host: WebSocket; client: WebSocket }> {
+async function setupRoom(
+  token: string
+): Promise<{ host: WebSocket; client: WebSocket }> {
   const host = await createWsClient();
   const client = await createWsClient();
 
@@ -51,7 +53,7 @@ async function setupRoom(token: string): Promise<{ host: WebSocket; client: WebS
 beforeAll(async () => {
   server = createServer();
   setupSignalingServer(server);
-  await new Promise<void>((resolve) => {
+  await new Promise<void>(resolve => {
     server.listen(0, () => {
       const addr = server.address();
       port = typeof addr === "object" && addr ? addr.port : 0;
@@ -61,7 +63,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
-  await new Promise<void>((resolve) => {
+  await new Promise<void>(resolve => {
     server.close(() => resolve());
   });
 });
@@ -158,12 +160,33 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     clients.push(host, client);
 
     const testData = Buffer.from("test-binary-data-12345");
+    const fileId = "12345678-1234-4234-8234-123456789abc";
+    const metaPromise = waitForMessage(client);
+    host.send(
+      JSON.stringify({
+        type: "file-meta",
+        meta: {
+          id: fileId,
+          name: "test.bin",
+          size: testData.length,
+          mimeType: "application/octet-stream",
+          totalChunks: 1,
+        },
+      })
+    );
+    expect((await metaPromise).type).toBe("file-meta");
+    const frame = Buffer.alloc(40 + testData.length);
+    frame.write(fileId, 0, "utf8");
+    frame.writeUInt32BE(0, 36);
+    testData.copy(frame, 40);
     const clientBinaryPromise = waitForMessage(client);
-    host.send(testData);
+    host.send(frame);
     const binaryMsg = await clientBinaryPromise;
 
     expect(binaryMsg._binary).toBe(true);
-    expect(Buffer.from(binaryMsg.data).toString()).toBe("test-binary-data-12345");
+    expect(Buffer.from(binaryMsg.data).subarray(40).toString()).toBe(
+      "test-binary-data-12345"
+    );
   });
 
   it("should notify host when client disconnects", async () => {
@@ -265,7 +288,13 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     // file-meta from client → host
     const fileMeta = {
       type: "file-meta",
-      meta: { id: "test-file-id", name: "photo.jpg", size: 1024, mimeType: "image/jpeg", totalChunks: 1 },
+      meta: {
+        id: "test-file-id",
+        name: "photo.jpg",
+        size: 1024,
+        mimeType: "image/jpeg",
+        totalChunks: 1,
+      },
     };
     const hostMetaPromise = waitForMessage(host);
     client.send(JSON.stringify(fileMeta));
@@ -337,7 +366,9 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
 
     // Collect all messages from host in background
     const hostMessages: any[] = [];
-    const hostMsgHandler = (data: any) => { hostMessages.push(JSON.parse(data.toString())); };
+    const hostMsgHandler = (data: any) => {
+      hostMessages.push(JSON.parse(data.toString()));
+    };
     host.on("message", hostMsgHandler);
 
     // Client reconnects via rejoin
@@ -345,10 +376,14 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     clients.push(client2);
 
     const client2Messages: any[] = [];
-    const client2MsgHandler = (data: any) => { client2Messages.push(JSON.parse(data.toString())); };
+    const client2MsgHandler = (data: any) => {
+      client2Messages.push(JSON.parse(data.toString()));
+    };
     client2.on("message", client2MsgHandler);
 
-    client2.send(JSON.stringify({ type: "rejoin", token: "3002", role: "client" }));
+    client2.send(
+      JSON.stringify({ type: "rejoin", token: "3002", role: "client" })
+    );
 
     // Wait for messages to arrive
     await new Promise(r => setTimeout(r, 200));
@@ -358,10 +393,18 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
 
     // Verify client2 received rejoined + connected
     expect(client2Messages.some(m => m.type === "rejoined")).toBe(true);
-    expect(client2Messages.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+    expect(
+      client2Messages.some(
+        m => m.type === "connected" && m.reconnected === true
+      )
+    ).toBe(true);
 
     // Verify host received peer-reconnected
-    expect(hostMessages.some(m => m.type === "peer-reconnected" && m.role === "client")).toBe(true);
+    expect(
+      hostMessages.some(
+        m => m.type === "peer-reconnected" && m.role === "client"
+      )
+    ).toBe(true);
   });
 
   it("should allow host to re-register after disconnect", async () => {
@@ -387,7 +430,9 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
 
     // Collect messages
     const clientMessages: any[] = [];
-    const clientMsgHandler = (data: any) => { clientMessages.push(JSON.parse(data.toString())); };
+    const clientMsgHandler = (data: any) => {
+      clientMessages.push(JSON.parse(data.toString()));
+    };
     client.on("message", clientMsgHandler);
 
     // Host reconnects via register with same token
@@ -395,7 +440,9 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     clients.push(host2);
 
     const host2Messages: any[] = [];
-    const host2MsgHandler = (data: any) => { host2Messages.push(JSON.parse(data.toString())); };
+    const host2MsgHandler = (data: any) => {
+      host2Messages.push(JSON.parse(data.toString()));
+    };
     host2.on("message", host2MsgHandler);
 
     host2.send(JSON.stringify({ type: "register", token: "3003" }));
@@ -408,10 +455,16 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
 
     // Verify host2 received registered + connected
     expect(host2Messages.some(m => m.type === "registered")).toBe(true);
-    expect(host2Messages.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+    expect(
+      host2Messages.some(m => m.type === "connected" && m.reconnected === true)
+    ).toBe(true);
 
     // Verify client received peer-reconnected
-    expect(clientMessages.some(m => m.type === "peer-reconnected" && m.role === "host")).toBe(true);
+    expect(
+      clientMessages.some(
+        m => m.type === "peer-reconnected" && m.role === "host"
+      )
+    ).toBe(true);
   });
 
   it("should relay messages after client rejoin", async () => {
@@ -436,7 +489,9 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
 
     // Drain host messages during rejoin
     const drainHost: any[] = [];
-    const drainHandler = (data: any) => { drainHost.push(JSON.parse(data.toString())); };
+    const drainHandler = (data: any) => {
+      drainHost.push(JSON.parse(data.toString()));
+    };
     host.on("message", drainHandler);
 
     // Client reconnects
@@ -444,10 +499,14 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     clients.push(client2);
 
     const client2Msgs: any[] = [];
-    const c2Handler = (data: any) => { client2Msgs.push(JSON.parse(data.toString())); };
+    const c2Handler = (data: any) => {
+      client2Msgs.push(JSON.parse(data.toString()));
+    };
     client2.on("message", c2Handler);
 
-    client2.send(JSON.stringify({ type: "rejoin", token: "3004", role: "client" }));
+    client2.send(
+      JSON.stringify({ type: "rejoin", token: "3004", role: "client" })
+    );
 
     // Wait for rejoin to complete
     await new Promise(r => setTimeout(r, 200));
@@ -456,7 +515,9 @@ describe("WebSocket Relay + WebRTC Signaling Server", () => {
     client2.off("message", c2Handler);
 
     // Verify rejoin succeeded
-    expect(client2Msgs.some(m => m.type === "connected" && m.reconnected === true)).toBe(true);
+    expect(
+      client2Msgs.some(m => m.type === "connected" && m.reconnected === true)
+    ).toBe(true);
 
     // Now verify relay still works
     const relayPromise = waitForMessage(client2);
